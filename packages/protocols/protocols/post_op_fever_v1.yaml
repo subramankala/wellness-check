@@ -1,0 +1,60 @@
+protocol_id: post_op_fever_v1
+version: 1
+chief_complaint: post operative fever
+eligibility_criteria:
+  - key: recent_surgery
+    description: patient had surgery within the last 30 days
+  - key: current_fever
+    description: patient reports measured or subjective fever
+required_questions:
+  - key: fever_temp_f
+    text: What is your highest temperature in Fahrenheit?
+    required: true
+  - key: postop_day
+    text: What post-op day are you on?
+    required: true
+  - key: wound_appearance
+    text: Is there wound redness, warmth, or drainage?
+    required: true
+optional_follow_up_questions:
+  - key: antipyretic_used
+    text: Have you taken acetaminophen or ibuprofen?
+    required: false
+  - key: hydration_status
+    text: Are you able to keep down oral fluids?
+    required: false
+red_flags:
+  - severe shortness of breath
+  - chest pain
+  - confusion
+  - heavy bleeding
+  - uncontrolled vomiting
+allowed_dispositions:
+  - self_care
+  - clinic_followup
+  - urgent_care
+  - emergency_department
+  - call_911
+disposition_mapping_hints:
+  - when_any:
+      - severe shortness of breath
+      - chest pain
+      - confusion
+      - heavy bleeding
+      - uncontrolled vomiting
+    disposition: call_911
+    severity_level: emergency
+    rationale: emergency hard-stop symptom present
+  - when_any:
+      - wound redness
+      - high fever
+      - persistent fever
+    disposition: urgent_care
+    severity_level: urgent
+    rationale: possible post-op complication requiring urgent evaluation
+  - when_any:
+      - low grade fever
+      - mild fever
+    disposition: clinic_followup
+    severity_level: normal
+    rationale: stable and non-emergent symptoms with follow-up

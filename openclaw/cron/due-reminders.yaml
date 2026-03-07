@@ -1,0 +1,9 @@
+name: due-reminders
+schedule:
+  cron: "*/15 * * * *"
+  timezone: "Asia/Kolkata"
+run:
+  command: "python3 openclaw/skills/dispatch-due-medication-windows/scripts/run.py"
+  env:
+    PATIENT_ID: "patient_discharge_001"
+    MEDICATION_BASE_URL: "http://localhost:8105"

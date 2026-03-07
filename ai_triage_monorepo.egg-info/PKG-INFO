@@ -1,0 +1,42 @@
+Metadata-Version: 2.4
+Name: ai-triage-monorepo
+Version: 0.1.0
+Summary: Production-shaped monorepo scaffold for AI patient triage
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn[standard]>=0.30.0
+Requires-Dist: pydantic>=2.8.0
+Requires-Dist: pydantic-settings>=2.4.0
+Requires-Dist: structlog>=24.2.0
+Requires-Dist: httpx>=0.27.0
+Requires-Dist: pyyaml>=6.0.2
+Requires-Dist: psycopg[binary]>=3.2.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.3.0; extra == "dev"
+Requires-Dist: pytest-cov>=5.0.0; extra == "dev"
+Requires-Dist: ruff>=0.6.0; extra == "dev"
+Requires-Dist: mypy>=1.11.0; extra == "dev"
+
+# AI Patient Triage Monorepo
+
+Production-shaped scaffold for a multi-service AI patient triage platform.
+
+## Layers
+
+- Realtime conversation layer: `apps/gateway`, `apps/voice-runtime`
+- Deterministic safety/policy layer: `services/triage-engine`, `services/safety-engine`
+- Operational handoff layer: `services/handoff-router`, `services/documentation`, `apps/ops-console`
+- Medication adherence lane: `services/medication-workflow`
+
+## Quick Start
+
+1. Copy env defaults if needed: `.env.example`
+2. Install dependencies: `make bootstrap`
+3. Start stack: `make dev`
+4. Run tests: `make test`
+
+## Notes
+
+- Twilio/OpenAI wiring is intentionally deferred with TODO markers.
+- Protocol definitions live in `packages/protocols/schemas`.

@@ -1,0 +1,90 @@
+{
+  "patient": {
+    "patient_id": "patient_cardiac_pilot_001",
+    "display_name": "Arjun Mehta",
+    "timezone": "UTC",
+    "caregiver_name": "Neha Mehta",
+    "caregiver_contact": "+15550001234",
+    "created_at": "2026-03-07T07:45:00+00:00",
+    "notes": "Post-stent discharge, one-caregiver pilot"
+  },
+  "plan": {
+    "patient_id": "patient_cardiac_pilot_001",
+    "plan_id": "plan_post_cardiac_discharge_v2",
+    "workflow_status": "active",
+    "timezone": "UTC",
+    "created_at": "2026-03-07T08:00:00+00:00",
+    "medications": [
+      {
+        "entry_id": "med_0800_beta",
+        "display_name": "Morning Beta Blocker",
+        "generic_name": "metoprolol",
+        "medication_name": "CardioMed-Beta",
+        "dose_instructions": "25 mg tablet after breakfast",
+        "scheduled_time": "08:00",
+        "meal_constraint": "after_meal",
+        "priority": "critical",
+        "criticality_level": "critical",
+        "monitoring_notes": "Check pulse before dose",
+        "missed_dose_policy": "Notify caregiver immediately; if >2h late skip and log",
+        "side_effect_watch_items": ["dizziness", "weakness", "near_fainting"]
+      },
+      {
+        "entry_id": "med_0930_antiplatelet",
+        "display_name": "Morning Antiplatelet",
+        "generic_name": "clopidogrel",
+        "medication_name": "CardioMed-Platelet",
+        "dose_instructions": "75 mg tablet",
+        "scheduled_time": "09:30",
+        "meal_constraint": "none",
+        "priority": "critical",
+        "criticality_level": "critical",
+        "monitoring_notes": "Watch for unusual bleeding",
+        "missed_dose_policy": "Call caregiver if missed; clinician review same day",
+        "side_effect_watch_items": ["bleeding"]
+      },
+      {
+        "entry_id": "med_1230_diuretic",
+        "display_name": "Noon Diuretic",
+        "generic_name": "furosemide",
+        "medication_name": "CardioMed-Diuretic",
+        "dose_instructions": "40 mg tablet with lunch",
+        "scheduled_time": "12:30",
+        "meal_constraint": "with_food",
+        "priority": "important",
+        "criticality_level": "important",
+        "monitoring_notes": "Track urine output and dizziness",
+        "missed_dose_policy": "Take within 2 hours, else skip",
+        "side_effect_watch_items": ["dizziness", "weakness"]
+      },
+      {
+        "entry_id": "med_1800_statin",
+        "display_name": "Evening Statin",
+        "generic_name": "atorvastatin",
+        "medication_name": "CardioMed-Statin",
+        "dose_instructions": "20 mg tablet after dinner",
+        "scheduled_time": "18:00",
+        "meal_constraint": "after_meal",
+        "priority": "routine",
+        "criticality_level": "routine",
+        "monitoring_notes": "Monitor muscle weakness",
+        "missed_dose_policy": "Take if remembered same evening",
+        "side_effect_watch_items": ["severe_weakness"]
+      },
+      {
+        "entry_id": "med_2200_bp",
+        "display_name": "Bedtime BP Agent",
+        "generic_name": "amlodipine",
+        "medication_name": "CardioMed-BP",
+        "dose_instructions": "5 mg tablet",
+        "scheduled_time": "22:00",
+        "meal_constraint": "none",
+        "priority": "important",
+        "criticality_level": "important",
+        "monitoring_notes": "Watch swelling in legs",
+        "missed_dose_policy": "Take within 3 hours else skip",
+        "side_effect_watch_items": ["swelling"]
+      }
+    ]
+  }
+}

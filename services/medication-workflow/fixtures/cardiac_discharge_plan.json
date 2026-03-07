@@ -1,0 +1,21 @@
+{
+  "patient_id": "patient_cardiac_001",
+  "plan_id": "plan_cardiac_discharge_v1",
+  "workflow_status": "active",
+  "timezone": "UTC",
+  "created_at": "2026-03-07T08:00:00+00:00",
+  "medications": [
+    {"entry_id": "med_01", "medication_name": "CardioMed-A", "dose_instructions": "5 mg tablet", "scheduled_time": "08:00", "meal_constraint": "after_meal", "priority": "critical", "monitoring_notes": "monitor blood pressure", "side_effect_watch_items": ["dizziness"]},
+    {"entry_id": "med_02", "medication_name": "CardioMed-B", "dose_instructions": "10 mg tablet", "scheduled_time": "09:00", "meal_constraint": "none", "priority": "critical", "monitoring_notes": "monitor heart rate", "side_effect_watch_items": ["weakness"]},
+    {"entry_id": "med_03", "medication_name": "CardioMed-C", "dose_instructions": "25 mg tablet", "scheduled_time": "10:00", "meal_constraint": "with_food", "priority": "routine", "monitoring_notes": "take with snack", "side_effect_watch_items": ["nausea"]},
+    {"entry_id": "med_04", "medication_name": "CardioMed-D", "dose_instructions": "20 mg capsule", "scheduled_time": "12:00", "meal_constraint": "before_meal", "priority": "routine", "monitoring_notes": "30 min before lunch", "side_effect_watch_items": []},
+    {"entry_id": "med_05", "medication_name": "CardioMed-E", "dose_instructions": "40 mg tablet", "scheduled_time": "14:00", "meal_constraint": "none", "priority": "routine", "monitoring_notes": "afternoon dose", "side_effect_watch_items": ["dizziness"]},
+    {"entry_id": "med_06", "medication_name": "CardioMed-F", "dose_instructions": "500 mg tablet", "scheduled_time": "18:00", "meal_constraint": "with_food", "priority": "critical", "monitoring_notes": "take with dinner", "side_effect_watch_items": ["nausea"]},
+    {"entry_id": "med_07", "medication_name": "CardioMed-G", "dose_instructions": "50 mg tablet", "scheduled_time": "20:00", "meal_constraint": "after_meal", "priority": "routine", "monitoring_notes": "night BP support", "side_effect_watch_items": ["weakness"]},
+    {"entry_id": "med_08", "medication_name": "CardioMed-H", "dose_instructions": "75 mg tablet", "scheduled_time": "21:00", "meal_constraint": "none", "priority": "critical", "monitoring_notes": "antiplatelet placeholder", "side_effect_watch_items": ["bleeding"]},
+    {"entry_id": "med_09", "medication_name": "CardioMed-I", "dose_instructions": "1000 IU softgel", "scheduled_time": "22:00", "meal_constraint": "with_food", "priority": "routine", "monitoring_notes": "night supplement", "side_effect_watch_items": []},
+    {"entry_id": "med_10", "medication_name": "CardioMed-J", "dose_instructions": "0.5 mg tablet", "scheduled_time": "22:30", "meal_constraint": "empty_stomach", "priority": "routine", "monitoring_notes": "bedtime medication", "side_effect_watch_items": ["dizziness"]},
+    {"entry_id": "med_11", "medication_name": "CardioMed-K", "dose_instructions": "2.5 mg tablet", "scheduled_time": "08:30", "meal_constraint": "none", "priority": "routine", "monitoring_notes": "morning support", "side_effect_watch_items": ["nausea"]},
+    {"entry_id": "med_12", "medication_name": "CardioMed-L", "dose_instructions": "1 puff inhalation", "scheduled_time": "07:30", "meal_constraint": "none", "priority": "critical", "monitoring_notes": "respiratory support", "side_effect_watch_items": ["breathlessness"]}
+  ]
+}

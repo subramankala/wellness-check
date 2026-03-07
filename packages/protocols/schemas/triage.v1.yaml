@@ -1,0 +1,19 @@
+version: 1
+name: patient-triage-protocol
+conversation:
+  intake:
+    required_fields:
+      - patient_id
+      - symptom_summary
+      - onset
+      - severity
+  safety_check:
+    required_flags:
+      - self_harm_risk
+      - stroke_red_flags
+      - chest_pain_red_flags
+handoff:
+  channels:
+    - nurse_queue
+    - physician_queue
+    - emergency_dispatch

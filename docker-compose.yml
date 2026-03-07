@@ -1,0 +1,128 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: triage
+      POSTGRES_USER: triage
+      POSTGRES_PASSWORD: triage
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U triage -d triage"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  gateway:
+    build:
+      context: .
+      dockerfile: docker/python-service.Dockerfile
+    environment:
+      SERVICE_MODULE: gateway_app.main:app
+      SERVICE_PORT: 8000
+    env_file:
+      - .env.example
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  voice-runtime:
+    build:
+      context: .
+      dockerfile: docker/python-service.Dockerfile
+    environment:
+      SERVICE_MODULE: voice_runtime_app.main:app
+      SERVICE_PORT: 8001
+    env_file:
+      - .env.example
+    ports:
+      - "8001:8001"
+    depends_on:
+      gateway:
+        condition: service_started
+
+  triage-engine:
+    build:
+      context: .
+      dockerfile: docker/python-service.Dockerfile
+    environment:
+      SERVICE_MODULE: triage_engine.main:app
+      SERVICE_PORT: 8101
+    env_file:
+      - .env.example
+    ports:
+      - "8101:8101"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  safety-engine:
+    build:
+      context: .
+      dockerfile: docker/python-service.Dockerfile
+    environment:
+      SERVICE_MODULE: safety_engine.main:app
+      SERVICE_PORT: 8102
+    env_file:
+      - .env.example
+    ports:
+      - "8102:8102"
+
+  handoff-router:
+    build:
+      context: .
+      dockerfile: docker/python-service.Dockerfile
+    environment:
+      SERVICE_MODULE: handoff_router.main:app
+      SERVICE_PORT: 8103
+    env_file:
+      - .env.example
+    ports:
+      - "8103:8103"
+
+  documentation:
+    build:
+      context: .
+      dockerfile: docker/python-service.Dockerfile
+    environment:
+      SERVICE_MODULE: documentation_service.main:app
+      SERVICE_PORT: 8104
+    env_file:
+      - .env.example
+    ports:
+      - "8104:8104"
+
+  medication-workflow:
+    build:
+      context: .
+      dockerfile: docker/python-service.Dockerfile
+    environment:
+      SERVICE_MODULE: medication_workflow.main:app
+      SERVICE_PORT: 8105
+    env_file:
+      - .env.example
+    ports:
+      - "8105:8105"
+
+  ops-console:
+    build:
+      context: .
+      dockerfile: docker/node-dev.Dockerfile
+    working_dir: /workspace/apps/ops-console
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "3000"]
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./:/workspace
+    depends_on:
+      gateway:
+        condition: service_started
+
+volumes:
+  postgres_data:

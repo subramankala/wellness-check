@@ -1,0 +1,9 @@
+name: caregiver-daily-summary
+schedule:
+  cron: "30 21 * * *"
+  timezone: "Asia/Kolkata"
+run:
+  command: "python3 openclaw/skills/send-caregiver-daily-summary/scripts/run.py"
+  env:
+    PATIENT_ID: "patient_discharge_001"
+    MEDICATION_BASE_URL: "http://localhost:8105"

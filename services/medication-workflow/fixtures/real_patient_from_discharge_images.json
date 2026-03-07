@@ -1,0 +1,301 @@
+{
+  "patient": {
+    "patient_id": "patient_discharge_001",
+    "display_name": "Nageswara Rao",
+    "timezone": "Asia/Kolkata",
+    "caregiver_name": "Primary Caregiver",
+    "caregiver_contact": "+910000000000",
+    "created_at": "2026-03-07T08:00:00+05:30",
+    "notes": "Extracted from discharge medication images. PRN items not scheduled in reminders: Sorbitrate 5mg (chest pain), Dytor 5mg (SOB). General instruction: rest for 2 weeks."
+  },
+  "plan": {
+    "patient_id": "patient_discharge_001",
+    "plan_id": "plan_from_discharge_images_v1",
+    "workflow_status": "active",
+    "timezone": "Asia/Kolkata",
+    "created_at": "2026-03-07T08:00:00+05:30",
+    "medications": [
+      {
+        "entry_id": "brilinta_0800",
+        "display_name": "Brilinta 90mg (Morning)",
+        "generic_name": "ticagrelor 90mg",
+        "medication_name": "BRILINTA 90MG TAB",
+        "dose_instructions": "1 tablet after food",
+        "scheduled_time": "08:00",
+        "meal_constraint": "after_meal",
+        "priority": "critical",
+        "criticality_level": "critical",
+        "monitoring_notes": "From discharge sheet: 8 AM - 8 PM",
+        "missed_dose_policy": "Notify caregiver immediately; escalate if repeated miss",
+        "side_effect_watch_items": [
+          "bleeding",
+          "weakness"
+        ]
+      },
+      {
+        "entry_id": "brilinta_2000",
+        "display_name": "Brilinta 90mg (Evening)",
+        "generic_name": "ticagrelor 90mg",
+        "medication_name": "BRILINTA 90MG TAB",
+        "dose_instructions": "1 tablet after food",
+        "scheduled_time": "20:00",
+        "meal_constraint": "after_meal",
+        "priority": "critical",
+        "criticality_level": "critical",
+        "monitoring_notes": "From discharge sheet: 8 AM - 8 PM",
+        "missed_dose_policy": "Notify caregiver immediately; escalate if repeated miss",
+        "side_effect_watch_items": [
+          "bleeding",
+          "weakness"
+        ]
+      },
+      {
+        "entry_id": "ecosprin_1400",
+        "display_name": "Ecosprin 75mg",
+        "generic_name": "aspirin 75mg",
+        "medication_name": "ECOSPRIN 75MG TAB",
+        "dose_instructions": "1 tablet after food",
+        "scheduled_time": "14:00",
+        "meal_constraint": "after_meal",
+        "priority": "critical",
+        "criticality_level": "critical",
+        "monitoring_notes": "From discharge sheet: 2 PM",
+        "missed_dose_policy": "Notify caregiver and review same day",
+        "side_effect_watch_items": [
+          "bleeding"
+        ]
+      },
+      {
+        "entry_id": "aztor_2100",
+        "display_name": "Aztor 40mg",
+        "generic_name": "atorvastatin 40mg",
+        "medication_name": "AZTOR 40MG TAB",
+        "dose_instructions": "1 tablet after food",
+        "scheduled_time": "21:00",
+        "meal_constraint": "after_meal",
+        "priority": "important",
+        "criticality_level": "important",
+        "monitoring_notes": "From discharge sheet: 9 PM",
+        "missed_dose_policy": "Take same day if remembered; otherwise skip and log",
+        "side_effect_watch_items": [
+          "weakness"
+        ]
+      },
+      {
+        "entry_id": "cardivas_0800",
+        "display_name": "Cardivas 3.125mg (Morning)",
+        "generic_name": "carvedilol 3.125mg",
+        "medication_name": "CARDIVAS 3.125MG TAB",
+        "dose_instructions": "1/2 tablet after food",
+        "scheduled_time": "08:00",
+        "meal_constraint": "after_meal",
+        "priority": "critical",
+        "criticality_level": "critical",
+        "monitoring_notes": "From discharge sheet: 8 AM - 8 PM",
+        "missed_dose_policy": "Notify caregiver immediately if missed",
+        "side_effect_watch_items": [
+          "dizziness",
+          "near_fainting"
+        ]
+      },
+      {
+        "entry_id": "cardivas_2000",
+        "display_name": "Cardivas 3.125mg (Evening)",
+        "generic_name": "carvedilol 3.125mg",
+        "medication_name": "CARDIVAS 3.125MG TAB",
+        "dose_instructions": "1/2 tablet after food",
+        "scheduled_time": "20:00",
+        "meal_constraint": "after_meal",
+        "priority": "critical",
+        "criticality_level": "critical",
+        "monitoring_notes": "From discharge sheet: 8 AM - 8 PM",
+        "missed_dose_policy": "Notify caregiver immediately if missed",
+        "side_effect_watch_items": [
+          "dizziness",
+          "near_fainting"
+        ]
+      },
+      {
+        "entry_id": "dytor_plus_ls_0900",
+        "display_name": "Dytor Plus-LS",
+        "generic_name": "torsemide 10mg + spironolactone 25mg",
+        "medication_name": "DYTOR PLUS-LS TAB",
+        "dose_instructions": "1 tablet after food",
+        "scheduled_time": "09:00",
+        "meal_constraint": "after_meal",
+        "priority": "important",
+        "criticality_level": "important",
+        "monitoring_notes": "From discharge sheet: 9 AM",
+        "missed_dose_policy": "Take within 2 hours else skip and log",
+        "side_effect_watch_items": [
+          "dizziness",
+          "weakness"
+        ]
+      },
+      {
+        "entry_id": "dytor_5mg_1600",
+        "display_name": "Dytor 5mg",
+        "generic_name": "torsemide 5mg",
+        "medication_name": "DYTOR 5MG TAB",
+        "dose_instructions": "1 tablet after food",
+        "scheduled_time": "16:00",
+        "meal_constraint": "after_meal",
+        "priority": "important",
+        "criticality_level": "important",
+        "monitoring_notes": "From discharge sheet: 4 PM",
+        "missed_dose_policy": "Take within same day and log",
+        "side_effect_watch_items": [
+          "dizziness",
+          "weakness"
+        ]
+      },
+      {
+        "entry_id": "nikoran_0800",
+        "display_name": "Nikoran 5mg (Morning)",
+        "generic_name": "nicorandil 5mg",
+        "medication_name": "NIKORAN 5MG TAB",
+        "dose_instructions": "1 tablet after food",
+        "scheduled_time": "08:00",
+        "meal_constraint": "after_meal",
+        "priority": "important",
+        "criticality_level": "important",
+        "monitoring_notes": "From discharge sheet: 8 AM - 8 PM",
+        "missed_dose_policy": "Take when remembered if within safe window; log for review",
+        "side_effect_watch_items": [
+          "dizziness"
+        ]
+      },
+      {
+        "entry_id": "nikoran_2000",
+        "display_name": "Nikoran 5mg (Evening)",
+        "generic_name": "nicorandil 5mg",
+        "medication_name": "NIKORAN 5MG TAB",
+        "dose_instructions": "1 tablet after food",
+        "scheduled_time": "20:00",
+        "meal_constraint": "after_meal",
+        "priority": "important",
+        "criticality_level": "important",
+        "monitoring_notes": "From discharge sheet: 8 AM - 8 PM",
+        "missed_dose_policy": "Take when remembered if within safe window; log for review",
+        "side_effect_watch_items": [
+          "dizziness"
+        ]
+      },
+      {
+        "entry_id": "gener_sta_ir_2mg_0900",
+        "display_name": "Gener STA IR 50/500/2",
+        "generic_name": "sitagliptin 50mg + glimepiride 2mg + metformin 500mg",
+        "medication_name": "GENER STA IR 50/500/2",
+        "dose_instructions": "1 tablet after food",
+        "scheduled_time": "09:00",
+        "meal_constraint": "after_meal",
+        "priority": "important",
+        "criticality_level": "important",
+        "monitoring_notes": "From discharge sheet: 9 AM",
+        "missed_dose_policy": "If missed, log and notify caregiver",
+        "side_effect_watch_items": [
+          "weakness",
+          "confusion"
+        ]
+      },
+      {
+        "entry_id": "gener_sta_ir_1mg_2100",
+        "display_name": "Gener STA IR 50/500/1",
+        "generic_name": "sitagliptin 50mg + glimepiride 1mg + metformin 500mg",
+        "medication_name": "GENER STA IR 50/500/1",
+        "dose_instructions": "1 tablet after food",
+        "scheduled_time": "21:00",
+        "meal_constraint": "after_meal",
+        "priority": "important",
+        "criticality_level": "important",
+        "monitoring_notes": "From discharge sheet: 9 PM",
+        "missed_dose_policy": "If missed, log and notify caregiver",
+        "side_effect_watch_items": [
+          "weakness",
+          "confusion"
+        ]
+      },
+      {
+        "entry_id": "pantop_0700",
+        "display_name": "Pantoprazole 40mg",
+        "generic_name": "pantoprazole 40mg",
+        "medication_name": "PANTOP 40MG TAB",
+        "dose_instructions": "1 tablet before food",
+        "scheduled_time": "07:00",
+        "meal_constraint": "before_meal",
+        "priority": "routine",
+        "criticality_level": "routine",
+        "monitoring_notes": "From discharge sheet: 7 AM",
+        "missed_dose_policy": "Take when remembered before next meal; log",
+        "side_effect_watch_items": [
+          "nausea"
+        ]
+      },
+      {
+        "entry_id": "cremaffin_plus_2100",
+        "display_name": "Cremaffin Plus Syrup",
+        "generic_name": "liquid paraffin + magnesium hydroxide + sodium picosulfate",
+        "medication_name": "CREMAFFIN PLUS 225ML SYP",
+        "dose_instructions": "15 ml at bedtime",
+        "scheduled_time": "21:00",
+        "meal_constraint": "none",
+        "priority": "routine",
+        "criticality_level": "routine",
+        "monitoring_notes": "From discharge sheet: 9 PM; stop in case of loose stools",
+        "missed_dose_policy": "Optional supportive medication; log if skipped",
+        "side_effect_watch_items": [
+          "loose_stools"
+        ]
+      },
+      {
+        "entry_id": "tbact_0900",
+        "display_name": "T-Bact Ointment 15g",
+        "generic_name": "mupirocin 2% w/w",
+        "medication_name": "T-BACT 15GM OINTMENT",
+        "dose_instructions": "Local application as directed after dressing",
+        "scheduled_time": "09:00",
+        "meal_constraint": "none",
+        "priority": "important",
+        "criticality_level": "important",
+        "monitoring_notes": "From discharge sheet: once daily dressing",
+        "missed_dose_policy": "Apply at next dressing time and log",
+        "side_effect_watch_items": [
+          "redness",
+          "bleeding"
+        ]
+      },
+      {
+        "entry_id": "taxim_o_0800",
+        "display_name": "Taxim O 200mg (Morning)",
+        "generic_name": "cefixime 200mg",
+        "medication_name": "TAXIM O 200MG TAB",
+        "dose_instructions": "1 tablet after food (3 days course)",
+        "scheduled_time": "08:00",
+        "meal_constraint": "after_meal",
+        "priority": "important",
+        "criticality_level": "important",
+        "monitoring_notes": "From discharge sheet: 8 AM - 8 PM for 3 days",
+        "missed_dose_policy": "Take same day if remembered; complete full prescribed course duration",
+        "side_effect_watch_items": [
+          "nausea"
+        ]
+      },
+      {
+        "entry_id": "taxim_o_2000",
+        "display_name": "Taxim O 200mg (Evening)",
+        "generic_name": "cefixime 200mg",
+        "medication_name": "TAXIM O 200MG TAB",
+        "dose_instructions": "1 tablet after food (3 days course)",
+        "scheduled_time": "20:00",
+        "meal_constraint": "after_meal",
+        "priority": "important",
+        "criticality_level": "important",
+        "monitoring_notes": "From discharge sheet: 8 AM - 8 PM for 3 days",
+        "missed_dose_policy": "Take same day if remembered; complete full prescribed course duration",
+        "side_effect_watch_items": [
+          "nausea"
+        ]
+      }
+    ]
+  }
+}
