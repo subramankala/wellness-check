@@ -21,7 +21,13 @@ def applied_versions(conn: psycopg.Connection) -> set[str]:
     with conn.cursor() as cur:
         cur.execute("SELECT version FROM mw_schema_migrations")
         rows = cur.fetchall()
-    return {str(row[0]) for row in rows}
+    versions: set[str] = set()
+    for row in rows:
+        if isinstance(row, dict):
+            versions.add(str(row["version"]))
+        else:
+            versions.add(str(row[0]))
+    return versions
 
 
 def migration_files(migrations_dir: Path) -> list[Path]:

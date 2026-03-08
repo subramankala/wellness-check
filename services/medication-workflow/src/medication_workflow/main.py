@@ -539,6 +539,8 @@ def _caregiver_actions(
     log: DailyMedicationLog,
     windows: list[AdministrationWindow],
     care_instances: list[CareActivityInstance],
+    *,
+    at: datetime,
 ) -> list[CaregiverActionRecommendation]:
     actions: list[CaregiverActionRecommendation] = []
     for window in windows:
@@ -614,6 +616,7 @@ def _caregiver_actions(
                 )
             )
 
+    important_threshold_minutes = int(os.getenv("MEDICATION_IMPORTANT_ACTIVITY_ESCALATION_MINUTES", "45"))
     for instance in care_instances:
         slot = instance.local_scheduled_time[11:16] if instance.local_scheduled_time else "unknown"
         if instance.status == "due":
@@ -627,15 +630,31 @@ def _caregiver_actions(
                 )
             )
         elif instance.status == "overdue":
-            actions.append(
-                CaregiverActionRecommendation(
-                    action_id=f"act_{instance.instance_id}_care_overdue",
-                    action_type="care_activity_overdue_follow_up_now",
-                    priority="critical" if instance.priority == "critical" else "high",
-                    reason=f"{instance.title} is overdue since {slot}",
-                    related_window_id=instance.instance_id,
+            scheduled = datetime.fromisoformat(instance.scheduled_datetime)
+            overdue_minutes = int((at - scheduled).total_seconds() // 60)
+            if instance.priority in {"important", "critical"} and overdue_minutes >= important_threshold_minutes:
+                actions.append(
+                    CaregiverActionRecommendation(
+                        action_id=f"act_{instance.instance_id}_important_care_overdue",
+                        action_type="important_care_activity_missed_follow_up",
+                        priority="critical" if instance.priority == "critical" else "high",
+                        reason=(
+                            f"Important care activity missed: {instance.title} at {slot}. "
+                            "Caregiver action required now."
+                        ),
+                        related_window_id=instance.instance_id,
+                    )
                 )
-            )
+            else:
+                actions.append(
+                    CaregiverActionRecommendation(
+                        action_id=f"act_{instance.instance_id}_care_overdue",
+                        action_type="care_activity_overdue_follow_up_now",
+                        priority="critical" if instance.priority == "critical" else "high",
+                        reason=f"{instance.title} is overdue since {slot}",
+                        related_window_id=instance.instance_id,
+                    )
+                )
 
     for alert in log.alerts:
         if alert.category in {"concerning_symptoms", "urgent_symptoms"}:
@@ -724,8 +743,8 @@ def _window_reminder_message(window: AdministrationWindow) -> str:
 def _window_overdue_followup_message(window: AdministrationWindow) -> str:
     names = _window_medication_names(window)
     return (
-        f"{window.slot_time}: Overdue critical medication window ({names}). "
-        "Follow up now and confirm TAKEN / DELAYED / SKIPPED / UNSURE."
+        f"ALERT {window.slot_time}: Critical medication window missed ({names}). "
+        "Caregiver follow up now and confirm TAKEN / DELAYED / SKIPPED / UNSURE."
     )
 
 
@@ -844,6 +863,16 @@ def _latest_overdue_followup_stage(log: DailyMedicationLog, window_id: str) -> t
             latest_time = sent_at
             latest_stage = stage
     return latest_stage, latest_time
+
+
+def _window_scheduled_time_utc(window: AdministrationWindow) -> datetime | None:
+    if not window.meds:
+        return None
+    return min(datetime.fromisoformat(item.scheduled_datetime) for item in window.meds)
+
+
+def _critical_window_escalation_threshold_minutes() -> int:
+    return int(os.getenv("MEDICATION_CRITICAL_WINDOW_ESCALATION_MINUTES", "45"))
 
 
 def _latest_customer_message_at(patient_id: str) -> str:
@@ -1054,7 +1083,7 @@ def _build_careos_today(
         windows=windows,
         care_instances=updated.care_activity_instances,
     )
-    actions = _caregiver_actions(updated, windows, updated.care_activity_instances)
+    actions = _caregiver_actions(updated, windows, updated.care_activity_instances, at=local_now.astimezone(UTC))
     summary = _build_summary(
         patient.patient_id,
         date,
@@ -1492,6 +1521,12 @@ def send_overdue_critical_followups(
 
     for window in windows:
         if not (window.window_status == "overdue" and window.window_risk_level == "high"):
+            continue
+        scheduled_utc = _window_scheduled_time_utc(window)
+        if scheduled_utc is None:
+            continue
+        overdue_minutes = int((now_utc - scheduled_utc).total_seconds() // 60)
+        if overdue_minutes < _critical_window_escalation_threshold_minutes():
             continue
 
         latest_stage, latest_time = _latest_overdue_followup_stage(updated, window.window_id)
@@ -2343,7 +2378,7 @@ def today_view(patient_id: str) -> MedicationTodayView:
     windows = _administration_windows(updated, timezone)
     care_due_now = [item for item in updated.care_activity_instances if item.status == "due"]
     care_overdue = [item for item in updated.care_activity_instances if item.status == "overdue"]
-    actions = _caregiver_actions(updated, windows, updated.care_activity_instances)
+    actions = _caregiver_actions(updated, windows, updated.care_activity_instances, at=local_now.astimezone(UTC))
     action_types = [item.action_type for item in actions]
     unified = _build_unified_daily_timeline(
         patient_id=patient.patient_id,
@@ -2452,7 +2487,7 @@ def simulate_day_report(patient_id: str, date: str = Query(...)) -> DaySimulatio
         final_day=True,
     )
     windows = _administration_windows(updated, timezone)
-    actions = _caregiver_actions(updated, windows, updated.care_activity_instances)
+    actions = _caregiver_actions(updated, windows, updated.care_activity_instances, at=day_end)
 
     critical_missed = [item for item in updated.alerts if item.category == "missed_critical_dose"]
     symptom_alerts = [

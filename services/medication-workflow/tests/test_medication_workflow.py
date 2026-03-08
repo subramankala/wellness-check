@@ -666,6 +666,39 @@ def test_overdue_critical_window_creates_followup_event_message() -> None:
     assert third.json()["sent_messages"] == []
 
 
+def test_critical_window_escalation_respects_configured_threshold(monkeypatch) -> None:
+    patient_id = "msg_overdue_threshold"
+    _setup_kolkata_patient_plan(patient_id)
+    monkeypatch.setenv("MEDICATION_CRITICAL_WINDOW_ESCALATION_MINUTES", "90")
+
+    client.post("/medication/simulated-time/set", json={"simulated_now": "2026-03-07T08:45:00+05:30"})
+    before_threshold = client.post(f"/medication/{patient_id}/send-overdue-critical-followups")
+    assert before_threshold.status_code == 200
+    assert before_threshold.json()["sent_messages"] == []
+
+    client.post("/medication/simulated-time/set", json={"simulated_now": "2026-03-07T09:35:00+05:30"})
+    after_threshold = client.post(f"/medication/{patient_id}/send-overdue-critical-followups")
+    assert after_threshold.status_code == 200
+    assert len(after_threshold.json()["sent_messages"]) == 1
+    assert after_threshold.json()["sent_messages"][0]["message_kind"] == "overdue_followup"
+
+
+def test_important_care_activity_escalates_after_configured_threshold(monkeypatch) -> None:
+    patient_id = "care_important_threshold"
+    _setup_patient_plan_with_care(patient_id)
+    monkeypatch.setenv("MEDICATION_IMPORTANT_ACTIVITY_ESCALATION_MINUTES", "30")
+
+    client.post("/medication/simulated-time/set", json={"simulated_now": "2026-03-07T08:20:00+05:30"})
+    before_threshold = client.get(f"/medication/{patient_id}/today").json()
+    before_actions = [item["action_type"] for item in before_threshold["caregiver_actions"]]
+    assert "important_care_activity_missed_follow_up" not in before_actions
+
+    client.post("/medication/simulated-time/set", json={"simulated_now": "2026-03-07T08:40:00+05:30"})
+    after_threshold = client.get(f"/medication/{patient_id}/today").json()
+    after_actions = [item["action_type"] for item in after_threshold["caregiver_actions"]]
+    assert "important_care_activity_missed_follow_up" in after_actions
+
+
 def test_mock_transport_stores_delivery_records_correctly() -> None:
     patient_id = "msg_delivery_records"
     _setup_kolkata_patient_plan(patient_id)
