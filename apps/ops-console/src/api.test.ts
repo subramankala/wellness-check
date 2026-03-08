@@ -57,6 +57,23 @@ describe("RuntimeApiClient", () => {
       })
       .mockResolvedValueOnce({
         ok: true,
+        json: async () => ({
+          patient_id: "p1",
+          date: "2026-03-07",
+          patient_timezone: "UTC",
+          local_now: "2026-03-07T08:00:00+00:00",
+          timeline: { patient_id: "p1", date: "2026-03-07", patient_timezone: "UTC", local_now: "2026-03-07T08:00:00+00:00", items: [] },
+          completed_items: [],
+          pending_items: [],
+          overdue_items: [],
+          next_item: null,
+          caregiver_actions_needed: [],
+          symptom_escalation_flags: [],
+          medication_adherence_summary: {}
+        })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
         json: async () => ([])
       })
       .mockResolvedValueOnce({
@@ -107,6 +124,9 @@ describe("RuntimeApiClient", () => {
 
     const unified = await client.getUnifiedDailyTimeline("p1", "2026-03-07");
     expect(unified.patient_id).toBe("p1");
+
+    const careOs = await client.getCareOsToday("p1");
+    expect(careOs.patient_id).toBe("p1");
 
     const notifications = await client.getMedicationNotifications("p1", "2026-03-07");
     expect(notifications).toEqual([]);

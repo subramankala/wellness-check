@@ -102,6 +102,21 @@ export type UnifiedDailyTimelineResponse = {
   }>;
 };
 
+export type CareOsTodayResponse = {
+  patient_id: string;
+  date: string;
+  patient_timezone: string;
+  local_now: string;
+  timeline: UnifiedDailyTimelineResponse;
+  completed_items: any[];
+  pending_items: any[];
+  overdue_items: any[];
+  next_item: any | null;
+  caregiver_actions_needed: any[];
+  symptom_escalation_flags: string[];
+  medication_adherence_summary: Record<string, unknown>;
+};
+
 export type DaySimulationReport = {
   patient_id: string;
   date: string;
@@ -216,6 +231,25 @@ export class RuntimeApiClient {
       throw new Error(`Failed to load unified daily timeline for ${patientId}`);
     }
     return (await response.json()) as UnifiedDailyTimelineResponse;
+  }
+
+  async getCareOsToday(patientId: string): Promise<CareOsTodayResponse> {
+    const response = await fetch(`${this.medicationBaseUrl}/careos/${patientId}/today`);
+    if (!response.ok) {
+      throw new Error(`Failed to load care OS today view for ${patientId}`);
+    }
+    return (await response.json()) as CareOsTodayResponse;
+  }
+
+  async completeCareOsItem(patientId: string, itemId: string, reason = "ops-console"): Promise<void> {
+    const response = await fetch(`${this.medicationBaseUrl}/careos/${patientId}/timeline/${itemId}/complete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason })
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to complete care OS item ${itemId}`);
+    }
   }
 
   async getMedicationToday(patientId: string): Promise<MedicationTodayView> {

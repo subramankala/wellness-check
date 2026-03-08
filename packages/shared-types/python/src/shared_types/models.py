@@ -118,6 +118,7 @@ class MedicationCriticality(StrEnum):
 
 
 class CareActivityCategory(StrEnum):
+    MEDICATION = "medication"
     MEAL = "meal"
     ACTIVITY = "activity"
     PHYSIO = "physio"
@@ -444,6 +445,8 @@ class DailyMedicationLog(BaseModel):
     confirmations: list[DoseConfirmation] = Field(default_factory=list)
     care_activity_instances: list[CareActivityInstance] = Field(default_factory=list)
     care_activity_confirmations: list[CareActivityConfirmation] = Field(default_factory=list)
+    vitals_checkins: list["VitalsCheckinRecord"] = Field(default_factory=list)
+    symptom_checkins: list["SymptomCheckinRecord"] = Field(default_factory=list)
     side_effect_checkins: list[SideEffectCheckin] = Field(default_factory=list)
     alerts: list[AdherenceAlert] = Field(default_factory=list)
     notifications: list[CaregiverNotificationEvent] = Field(default_factory=list)
@@ -525,6 +528,35 @@ class UnifiedDailyTimelineResponse(BaseModel):
     items: list[UnifiedDailyTimelineItem] = Field(default_factory=list)
 
 
+class CareOsTodayResponse(BaseModel):
+    patient_id: str
+    date: str
+    patient_timezone: str
+    local_now: str
+    timeline: UnifiedDailyTimelineResponse
+    completed_items: list[UnifiedDailyTimelineItem] = Field(default_factory=list)
+    pending_items: list[UnifiedDailyTimelineItem] = Field(default_factory=list)
+    overdue_items: list[UnifiedDailyTimelineItem] = Field(default_factory=list)
+    next_item: UnifiedDailyTimelineItem | None = None
+    caregiver_actions_needed: list[CaregiverActionRecommendation] = Field(default_factory=list)
+    symptom_escalation_flags: list[str] = Field(default_factory=list)
+    medication_adherence_summary: CaregiverSummary
+
+
+class CareOsSummaryResponse(BaseModel):
+    patient_id: str
+    date: str
+    patient_timezone: str
+    total_items: int
+    completed_count: int
+    pending_count: int
+    overdue_count: int
+    next_item: UnifiedDailyTimelineItem | None = None
+    caregiver_summary_text: str
+    symptom_escalation_flags: list[str] = Field(default_factory=list)
+    medication_adherence_summary: CaregiverSummary
+
+
 class AdministrationWindow(BaseModel):
     window_id: str
     slot_time: str
@@ -588,6 +620,78 @@ class CareActivityConfirmationRequest(BaseModel):
     instance_id: str
     confirmation: CareActivityConfirmationStatus
     confirmed_at: str | None = None
+    note: str = ""
+
+
+class TimelineActionRequest(BaseModel):
+    reason: str = ""
+    actor_id: str = "caregiver"
+    actor_name: str = "caregiver"
+    allow_high_risk_medication_edit: bool = False
+
+
+class TimelineDelayRequest(TimelineActionRequest):
+    minutes: int = 15
+
+
+class PatchCareActivityRequest(BaseModel):
+    title: str | None = None
+    schedule: str | None = None
+    duration_minutes: int | None = None
+    instruction: str | None = None
+    frequency: str | None = None
+    priority: str | None = None
+    confirmation_required: bool | None = None
+    escalation_policy: str | None = None
+    actor_id: str = "caregiver"
+    actor_name: str = "caregiver"
+    reason: str = ""
+
+
+class VitalsCheckinRequest(BaseModel):
+    checkin_time: str
+    blood_pressure_systolic: int | None = None
+    blood_pressure_diastolic: int | None = None
+    pulse_bpm: int | None = None
+    blood_sugar_mg_dl: int | None = None
+    note: str = ""
+
+
+class VitalsCheckinRecord(BaseModel):
+    patient_id: str
+    checkin_time: str
+    blood_pressure_systolic: int | None = None
+    blood_pressure_diastolic: int | None = None
+    pulse_bpm: int | None = None
+    blood_sugar_mg_dl: int | None = None
+    note: str = ""
+
+
+class SymptomCheckinRequest(BaseModel):
+    checkin_time: str
+    feeling: str = ""
+    chest_pain: bool = False
+    breathlessness: bool = False
+    dizziness: bool = False
+    swelling: bool = False
+    confusion: bool = False
+    severe_weakness: bool = False
+    bleeding: bool = False
+    note: str = ""
+
+
+class SymptomCheckinRecord(BaseModel):
+    patient_id: str
+    checkin_time: str
+    feeling: str = ""
+    chest_pain: bool = False
+    breathlessness: bool = False
+    dizziness: bool = False
+    swelling: bool = False
+    confusion: bool = False
+    severe_weakness: bool = False
+    bleeding: bool = False
+    escalation_level: SymptomEscalationLevel
     note: str = ""
 
 

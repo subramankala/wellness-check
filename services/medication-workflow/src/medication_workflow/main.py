@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -31,6 +32,8 @@ from shared_types import (
     CareActivityConfirmationRequest,
     CareActivityConfirmationStatus,
     CareActivityInstance,
+    CareOsSummaryResponse,
+    CareOsTodayResponse,
     ChannelType,
     CaregiverActionRecommendation,
     CaregiverNotificationEvent,
@@ -65,9 +68,17 @@ from shared_types import (
     SideEffectCheckin,
     SideEffectCheckinRequest,
     SimulatedTimeState,
+    SymptomEscalationLevel,
+    SymptomCheckinRecord,
+    SymptomCheckinRequest,
+    TimelineActionRequest,
+    TimelineDelayRequest,
     UnifiedDailyTimelineItem,
     UnifiedDailyTimelineResponse,
     UpdateMedicationScheduleEntryRequest,
+    PatchCareActivityRequest,
+    VitalsCheckinRecord,
+    VitalsCheckinRequest,
     configure_logging,
     get_logger,
 )
@@ -256,7 +267,7 @@ def _refresh_day_state(plan: MedicationPlan, log: DailyMedicationLog, at: dateti
     skipped_care_instance_ids = {
         confirmation.instance_id
         for confirmation in log.care_activity_confirmations
-        if confirmation.confirmation_status is CareActivityConfirmationStatus.SKIPPED
+        if confirmation.confirmation_status == CareActivityConfirmationStatus.SKIPPED
     }
     for instance in log.care_activity_instances:
         instance.status = classify_care_activity_status(
@@ -906,6 +917,194 @@ def _resolve_patient_id_from_sender(sender: str) -> str | None:
     return None
 
 
+async def _extract_form_data(request: Request) -> dict[str, str]:
+    content_type = request.headers.get("content-type", "").lower()
+    if "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type:
+        raw_body = (await request.body()).decode("utf-8")
+        parsed = parse_qs(raw_body, keep_blank_values=True)
+        return {key: values[-1] if values else "" for key, values in parsed.items()}
+    return {}
+
+
+def _twiml_message(text: str) -> Response:
+    safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    xml = f"<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Message>{safe}</Message></Response>"
+    return Response(content=xml, media_type="text/xml")
+
+
+def _parse_inbound_command(body: str) -> tuple[str, list[str]]:
+    parts = [part for part in body.strip().split() if part]
+    if not parts:
+        return "", []
+    return parts[0].upper(), parts[1:]
+
+
+def _find_care_instance_by_query(log: DailyMedicationLog, query: str) -> CareActivityInstance | None:
+    needle = query.strip().lower()
+    if not needle:
+        return None
+    due_first = sorted(
+        log.care_activity_instances,
+        key=lambda item: (item.status not in {"due", "overdue", "upcoming"}, item.scheduled_datetime),
+    )
+    for instance in due_first:
+        haystacks = [instance.activity_id.lower(), instance.title.lower()]
+        if any(needle in text for text in haystacks):
+            return instance
+    return None
+
+
+def _format_timeline_for_whatsapp(timeline: UnifiedDailyTimelineResponse, limit: int = 8) -> str:
+    if not timeline.items:
+        return "No scheduled care items found for today."
+    lines = [f"Schedule ({timeline.date}, {timeline.patient_timezone}):"]
+    for item in timeline.items[:limit]:
+        lines.append(f"- {item.slot_time} {item.title} [{item.status}]")
+    if len(timeline.items) > limit:
+        lines.append(f"...and {len(timeline.items) - limit} more")
+    lines.append("Commands: NEXT, SKIP <activity>, DELAY <activity> <minutes>")
+    return "\n".join(lines)
+
+
+def _format_today_for_whatsapp(today: MedicationTodayView) -> str:
+    due_windows = len(today.due_now)
+    overdue_windows = len(today.overdue)
+    due_care = len(today.care_activities_due_now)
+    overdue_care = len(today.care_activities_overdue)
+    summary = today.end_of_day_summary.summary_text
+    return (
+        f"Today ({today.date}, {today.patient_timezone})\n"
+        f"Medication due: {due_windows}, overdue: {overdue_windows}\n"
+        f"Care activities due: {due_care}, overdue: {overdue_care}\n"
+        f"{summary}\n"
+        "Use SCHEDULE for full plan or NEXT for next item."
+    )
+
+
+def _format_careos_today_for_whatsapp(today: CareOsTodayResponse) -> str:
+    escalation = ", ".join(today.symptom_escalation_flags) if today.symptom_escalation_flags else "none"
+    return (
+        f"TODAY ({today.date}, {today.patient_timezone})\n"
+        f"Completed: {len(today.completed_items)} | Pending: {len(today.pending_items)} | Overdue: {len(today.overdue_items)}\n"
+        f"Escalation: {escalation}\n"
+        f"{today.medication_adherence_summary.summary_text}"
+    )
+
+
+def _format_next_for_whatsapp(item: UnifiedDailyTimelineItem | None) -> str:
+    if item is None:
+        return "No pending items. All scheduled care items are complete."
+    return f"Next: {item.slot_time} {item.title} [{item.status}]."
+
+
+def _whatsapp_help_text() -> str:
+    return (
+        "Commands:\n"
+        "TODAY\nSCHEDULE\nNEXT\nSTATUS\n"
+        "DONE <item>\nSKIP <item>\nDELAY <item> <minutes>\nMOVE <item> <HH:MM>\nHELP"
+    )
+
+
+def _parse_move_time(value: str) -> tuple[int, int] | None:
+    try:
+        return parse_hhmm(value)
+    except ValueError:
+        return None
+
+
+def _next_timeline_item(timeline: UnifiedDailyTimelineResponse) -> UnifiedDailyTimelineItem | None:
+    for item in timeline.items:
+        if item.status in {"due", "overdue", "upcoming"}:
+            return item
+    return None
+
+
+def _symptom_escalation_flags(log: DailyMedicationLog) -> list[str]:
+    flags = [entry.escalation_level.value for entry in log.symptom_escalations]
+    if any(alert.category == "emergency_symptoms" for alert in log.alerts):
+        flags.append("emergency_escalation")
+    if any(alert.category == "urgent_symptoms" for alert in log.alerts):
+        flags.append("urgent_symptom_triage_recommended")
+    if any(alert.category == "concerning_symptoms" for alert in log.alerts):
+        flags.append("clinician_review_recommended")
+    return sorted(set(flags))
+
+
+def _build_careos_today(
+    *,
+    patient: PatientRecord,
+    plan: MedicationPlan,
+    date: str,
+    local_now: datetime,
+    updated: DailyMedicationLog,
+) -> CareOsTodayResponse:
+    timezone_name = _patient_timezone(patient, plan)
+    timezone = _zoneinfo(timezone_name)
+    windows = _administration_windows(updated, timezone)
+    timeline = _build_unified_daily_timeline(
+        patient_id=patient.patient_id,
+        date=date,
+        timezone_name=timezone_name,
+        local_now=local_now,
+        windows=windows,
+        care_instances=updated.care_activity_instances,
+    )
+    actions = _caregiver_actions(updated, windows, updated.care_activity_instances)
+    summary = _build_summary(
+        patient.patient_id,
+        date,
+        updated,
+        local_now=local_now,
+        patient_timezone=timezone_name,
+    )
+    completed_items = [item for item in timeline.items if item.status in {"completed", "skipped"}]
+    overdue_items = [item for item in timeline.items if item.status == "overdue"]
+    pending_items = [item for item in timeline.items if item.status in {"upcoming", "due", "overdue"}]
+    return CareOsTodayResponse(
+        patient_id=patient.patient_id,
+        date=date,
+        patient_timezone=timezone_name,
+        local_now=local_now.isoformat(),
+        timeline=timeline,
+        completed_items=completed_items,
+        pending_items=pending_items,
+        overdue_items=overdue_items,
+        next_item=_next_timeline_item(timeline),
+        caregiver_actions_needed=actions,
+        symptom_escalation_flags=_symptom_escalation_flags(updated),
+        medication_adherence_summary=summary,
+    )
+
+
+def _find_timeline_item(timeline: UnifiedDailyTimelineResponse, query: str) -> UnifiedDailyTimelineItem | None:
+    needle = query.strip().lower()
+    if not needle:
+        return None
+    for item in timeline.items:
+        if (
+            needle in item.item_id.lower()
+            or needle in item.title.lower()
+            or needle == item.slot_time.lower()
+        ):
+            return item
+    return None
+
+
+def _resolve_timeline_item_by_id(timeline: UnifiedDailyTimelineResponse, item_id: str) -> UnifiedDailyTimelineItem | None:
+    for item in timeline.items:
+        if item.item_id == item_id:
+            return item
+    return None
+
+
+def _requires_high_risk_guard(item: UnifiedDailyTimelineItem) -> bool:
+    return item.item_type == "medication_window" and item.priority == "high"
+
+
+def _default_symptom_level() -> SymptomEscalationLevel:
+    return SymptomEscalationLevel.WATCH
+
+
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(service="medication-workflow", status="ok")
@@ -1383,6 +1582,261 @@ def message_confirmation(patient_id: str, payload: MessageConfirmationRequest) -
     return _apply_window_confirmation(patient_id, payload)
 
 
+def _careos_apply_action(
+    *,
+    patient_id: str,
+    item: UnifiedDailyTimelineItem,
+    action: str,
+    minutes: int | None = None,
+    reason: str = "",
+) -> CareOsTodayResponse:
+    patient, plan = _assert_patient_and_plan(patient_id)
+    timezone_name = _patient_timezone(patient, plan)
+    timezone = _zoneinfo(timezone_name)
+    now_utc = STORE.now()
+    day = _local_day_from_utc(now_utc, timezone)
+
+    if item.item_type == "medication_window":
+        mapping = {"complete": DoseStatus.TAKEN, "skip": DoseStatus.SKIPPED, "delay": DoseStatus.DELAYED}
+        if action not in mapping:
+            raise HTTPException(status_code=400, detail="unsupported action for medication window")
+        _apply_window_confirmation(
+            patient_id,
+            MessageConfirmationRequest(
+                window_id=item.item_id,
+                confirmation=mapping[action],
+                confirmed_at=now_utc.isoformat(),
+                note=f"careos_{action}:{reason}",
+            ),
+        )
+    elif item.item_type == "care_activity":
+        log = STORE.get_log(patient_id, day)
+        updated = _refresh_day_state(plan, log, now_utc)
+        instance = next((entry for entry in updated.care_activity_instances if entry.instance_id == item.item_id), None)
+        if instance is None:
+            raise HTTPException(status_code=404, detail="care activity instance not found")
+        if action == "delay":
+            delay_minutes = minutes or 15
+            current = datetime.fromisoformat(instance.scheduled_datetime).astimezone(timezone)
+            moved = current + timedelta(minutes=delay_minutes)
+            instance.scheduled_datetime = moved.astimezone(UTC).isoformat()
+            instance.local_scheduled_time = moved.isoformat()
+            STORE.append_event(
+                patient_id=patient_id,
+                date=day,
+                event_type=ReviewActionType.REVIEW_STATUS_UPDATED,
+                message="care activity delayed",
+                metadata={"item_id": item.item_id, "minutes": str(delay_minutes), "reason": reason},
+            )
+        else:
+            mapping = {
+                "complete": CareActivityConfirmationStatus.DONE,
+                "skip": CareActivityConfirmationStatus.SKIPPED,
+            }
+            if action not in mapping:
+                raise HTTPException(status_code=400, detail="unsupported action for care activity")
+            care_activity_confirmation(
+                patient_id,
+                CareActivityConfirmationRequest(
+                    instance_id=item.item_id,
+                    confirmation=mapping[action],
+                    confirmed_at=now_utc.isoformat(),
+                    note=f"careos_{action}:{reason}",
+                ),
+            )
+    else:
+        raise HTTPException(status_code=400, detail="unsupported timeline item type")
+
+    refreshed_log = _refresh_day_state(plan, STORE.get_log(patient_id, day), now_utc)
+    return _build_careos_today(
+        patient=patient,
+        plan=plan,
+        date=day,
+        local_now=now_utc.astimezone(timezone),
+        updated=refreshed_log,
+    )
+
+
+@app.get("/careos/{patient_id}/today", response_model=CareOsTodayResponse)
+def careos_today(patient_id: str) -> CareOsTodayResponse:
+    patient, plan = _assert_patient_and_plan(patient_id)
+    timezone = _zoneinfo(_patient_timezone(patient, plan))
+    now_utc = STORE.now()
+    local_now = now_utc.astimezone(timezone)
+    day = local_now.date().isoformat()
+    updated = _refresh_day_state(plan, STORE.get_log(patient_id, day), now_utc)
+    return _build_careos_today(patient=patient, plan=plan, date=day, local_now=local_now, updated=updated)
+
+
+@app.get("/careos/{patient_id}/timeline", response_model=UnifiedDailyTimelineResponse)
+def careos_timeline(patient_id: str, date: str = Query(...)) -> UnifiedDailyTimelineResponse:
+    return daily_care_timeline(patient_id, date)
+
+
+@app.get("/careos/{patient_id}/next", response_model=UnifiedDailyTimelineItem | None)
+def careos_next(patient_id: str) -> UnifiedDailyTimelineItem | None:
+    today = careos_today(patient_id)
+    return today.next_item
+
+
+@app.get("/careos/{patient_id}/summary", response_model=CareOsSummaryResponse)
+def careos_summary(patient_id: str, date: str = Query(...)) -> CareOsSummaryResponse:
+    patient, plan = _assert_patient_and_plan(patient_id)
+    timezone = _zoneinfo(_patient_timezone(patient, plan))
+    at_utc = datetime.fromisoformat(f"{date}T12:00:00").replace(tzinfo=timezone).astimezone(UTC)
+    updated = _refresh_day_state(plan, STORE.get_log(patient_id, date), at_utc)
+    today = _build_careos_today(
+        patient=patient,
+        plan=plan,
+        date=date,
+        local_now=at_utc.astimezone(timezone),
+        updated=updated,
+    )
+    return CareOsSummaryResponse(
+        patient_id=patient_id,
+        date=date,
+        patient_timezone=today.patient_timezone,
+        total_items=len(today.timeline.items),
+        completed_count=len(today.completed_items),
+        pending_count=len(today.pending_items),
+        overdue_count=len(today.overdue_items),
+        next_item=today.next_item,
+        caregiver_summary_text=today.medication_adherence_summary.summary_text,
+        symptom_escalation_flags=today.symptom_escalation_flags,
+        medication_adherence_summary=today.medication_adherence_summary,
+    )
+
+
+@app.patch("/careos/{patient_id}/activities/{activity_id}", response_model=MedicationPlan)
+def careos_patch_activity(patient_id: str, activity_id: str, payload: PatchCareActivityRequest) -> MedicationPlan:
+    _get_patient_or_404(patient_id)
+    plan = _get_plan_or_404(patient_id)
+    target = next((activity for activity in plan.care_activities if activity.activity_id == activity_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="care activity not found")
+    updates = payload.model_dump(exclude_unset=True)
+    for key in ["actor_id", "actor_name", "reason"]:
+        updates.pop(key, None)
+    if "schedule" in updates and updates["schedule"] is not None:
+        parse_hhmm(str(updates["schedule"]))
+    for key, value in updates.items():
+        setattr(target, key, value)
+    _validate_plan_entries(plan)
+    STORE.put_plan(plan)
+    STORE.append_event(
+        patient_id=patient_id,
+        date=_today_date_string(),
+        event_type=ReviewActionType.REVIEW_STATUS_UPDATED,
+        message="care activity updated",
+        metadata={"activity_id": activity_id, "actor": payload.actor_name, "reason": payload.reason},
+    )
+    return plan
+
+
+@app.post("/careos/{patient_id}/timeline/{item_id}/delay", response_model=CareOsTodayResponse)
+def careos_delay_item(patient_id: str, item_id: str, payload: TimelineDelayRequest) -> CareOsTodayResponse:
+    today = careos_today(patient_id)
+    item = _resolve_timeline_item_by_id(today.timeline, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="timeline item not found")
+    if _requires_high_risk_guard(item) and not payload.allow_high_risk_medication_edit:
+        raise HTTPException(status_code=403, detail="high-risk medication edit blocked")
+    return _careos_apply_action(
+        patient_id=patient_id,
+        item=item,
+        action="delay",
+        minutes=payload.minutes,
+        reason=payload.reason,
+    )
+
+
+@app.post("/careos/{patient_id}/timeline/{item_id}/skip", response_model=CareOsTodayResponse)
+def careos_skip_item(patient_id: str, item_id: str, payload: TimelineActionRequest) -> CareOsTodayResponse:
+    today = careos_today(patient_id)
+    item = _resolve_timeline_item_by_id(today.timeline, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="timeline item not found")
+    if _requires_high_risk_guard(item) and not payload.allow_high_risk_medication_edit:
+        raise HTTPException(status_code=403, detail="high-risk medication edit blocked")
+    return _careos_apply_action(patient_id=patient_id, item=item, action="skip", reason=payload.reason)
+
+
+@app.post("/careos/{patient_id}/timeline/{item_id}/complete", response_model=CareOsTodayResponse)
+def careos_complete_item(patient_id: str, item_id: str, payload: TimelineActionRequest) -> CareOsTodayResponse:
+    today = careos_today(patient_id)
+    item = _resolve_timeline_item_by_id(today.timeline, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="timeline item not found")
+    if _requires_high_risk_guard(item) and not payload.allow_high_risk_medication_edit:
+        raise HTTPException(status_code=403, detail="high-risk medication edit blocked")
+    return _careos_apply_action(patient_id=patient_id, item=item, action="complete", reason=payload.reason)
+
+
+@app.post("/careos/{patient_id}/vitals", response_model=VitalsCheckinRecord)
+def careos_vitals_checkin(patient_id: str, payload: VitalsCheckinRequest) -> VitalsCheckinRecord:
+    patient, plan = _assert_patient_and_plan(patient_id)
+    timezone = _zoneinfo(_patient_timezone(patient, plan))
+    checkin_utc = _parse_query_datetime(payload.checkin_time, timezone)
+    day = _local_day_from_utc(checkin_utc, timezone)
+    record = VitalsCheckinRecord(
+        patient_id=patient_id,
+        checkin_time=checkin_utc.isoformat(),
+        blood_pressure_systolic=payload.blood_pressure_systolic,
+        blood_pressure_diastolic=payload.blood_pressure_diastolic,
+        pulse_bpm=payload.pulse_bpm,
+        blood_sugar_mg_dl=payload.blood_sugar_mg_dl,
+        note=payload.note,
+    )
+    log = STORE.get_log(patient_id, day)
+    log.vitals_checkins.append(record)
+    STORE.append_event(
+        patient_id=patient_id,
+        date=day,
+        event_type=ReviewActionType.MEDICATION_CHECKIN_RECORDED,
+        message="vitals check-in recorded",
+        metadata={"bp": f"{payload.blood_pressure_systolic}/{payload.blood_pressure_diastolic}", "pulse": str(payload.pulse_bpm)},
+    )
+    return record
+
+
+@app.post("/careos/{patient_id}/symptom-checkin", response_model=SymptomCheckinRecord)
+def careos_symptom_checkin(patient_id: str, payload: SymptomCheckinRequest) -> SymptomCheckinRecord:
+    patient, plan = _assert_patient_and_plan(patient_id)
+    timezone = _zoneinfo(_patient_timezone(patient, plan))
+    checkin_utc = _parse_query_datetime(payload.checkin_time, timezone)
+    day = _local_day_from_utc(checkin_utc, timezone)
+    side_effect_payload = SideEffectCheckinRequest(
+        checkin_time=checkin_utc.isoformat(),
+        feeling=payload.feeling,
+        dizziness=payload.dizziness,
+        breathlessness=payload.breathlessness,
+        bleeding=payload.bleeding,
+        nausea=False,
+        weakness=payload.severe_weakness,
+        swelling=payload.swelling,
+        note=payload.note,
+        chest_pain=payload.chest_pain,
+        confusion=payload.confusion,
+        near_fainting=False,
+        severe_weakness=payload.severe_weakness,
+    )
+    updated = side_effect_checkin(patient_id, side_effect_payload)
+    escalation = SymptomCheckinRecord(
+        patient_id=patient_id,
+        checkin_time=checkin_utc.isoformat(),
+        feeling=payload.feeling,
+        chest_pain=payload.chest_pain,
+        breathlessness=payload.breathlessness,
+        dizziness=payload.dizziness,
+        swelling=payload.swelling,
+        confusion=payload.confusion,
+        severe_weakness=payload.severe_weakness,
+        bleeding=payload.bleeding,
+        escalation_level=updated.symptom_escalations[-1].escalation_level if updated.symptom_escalations else _default_symptom_level(),
+        note=payload.note,
+    )
+    updated.symptom_checkins.append(escalation)
+    return escalation
 @app.post("/medication/{patient_id}/care-activity-confirmation", response_model=DailyMedicationLog)
 def care_activity_confirmation(patient_id: str, payload: CareActivityConfirmationRequest) -> DailyMedicationLog:
     patient, plan = _assert_patient_and_plan(patient_id)
@@ -1427,8 +1881,7 @@ def care_activity_confirmation(patient_id: str, payload: CareActivityConfirmatio
 
 @app.post("/webhooks/twilio/whatsapp/inbound")
 async def twilio_whatsapp_inbound(request: Request) -> Response:
-    form = await request.form()
-    form_data = {key: str(value) for key, value in form.items()}
+    form_data = await _extract_form_data(request)
     if not _validate_twilio_request_signature(request, form_data):
         raise HTTPException(status_code=403, detail="invalid twilio signature")
 
@@ -1444,21 +1897,110 @@ async def twilio_whatsapp_inbound(request: Request) -> Response:
     if _pilot_mode_enabled() and not _pilot_allowed_number(from_number):
         raise HTTPException(status_code=403, detail="pilot mode: inbound sender number not allowed")
 
+    command, args = _parse_inbound_command(body)
+    if command in {"SCHEDULE", "TODAY", "NEXT", "STATUS", "DONE", "SKIP", "DELAY", "MOVE", "HELP"}:
+        patient, plan = _assert_patient_and_plan(patient_id)
+        timezone_name = _patient_timezone(patient, plan)
+        timezone = _zoneinfo(timezone_name)
+        local_now = STORE.now().astimezone(timezone)
+        day = local_now.date().isoformat()
+        timeline = careos_timeline(patient_id, day)
+        careos_today_view = careos_today(patient_id)
+
+        if command == "HELP":
+            return _twiml_message(_whatsapp_help_text())
+        if command == "SCHEDULE":
+            return _twiml_message(_format_timeline_for_whatsapp(timeline))
+        if command in {"TODAY", "STATUS"}:
+            return _twiml_message(_format_careos_today_for_whatsapp(careos_today_view))
+        if command == "NEXT":
+            return _twiml_message(_format_next_for_whatsapp(_next_timeline_item(timeline)))
+        if command in {"DONE", "SKIP"}:
+            query = " ".join(args).strip()
+            if not query:
+                return _twiml_message(f"Usage: {command} <item>")
+            item = _find_timeline_item(timeline, query)
+            if item is None:
+                return _twiml_message(f"Could not find item matching '{query}'.")
+            action = "complete" if command == "DONE" else "skip"
+            updated_today = _careos_apply_action(patient_id=patient_id, item=item, action=action, reason="whatsapp_command")
+            return _twiml_message(
+                f"Marked {item.title} as {'done' if action == 'complete' else 'skipped'}. "
+                f"{_format_next_for_whatsapp(updated_today.next_item)}"
+            )
+        if command == "DELAY":
+            if len(args) < 2:
+                return _twiml_message("Usage: DELAY <item> <minutes>")
+            maybe_minutes = args[-1]
+            if not maybe_minutes.isdigit():
+                return _twiml_message("Usage: DELAY <item> <minutes>")
+            delay_minutes = int(maybe_minutes)
+            query = " ".join(args[:-1]).strip()
+            item = _find_timeline_item(timeline, query)
+            if item is None:
+                return _twiml_message(f"Could not find item matching '{query}'.")
+            updated_today = _careos_apply_action(
+                patient_id=patient_id,
+                item=item,
+                action="delay",
+                minutes=delay_minutes,
+                reason="whatsapp_command",
+            )
+            return _twiml_message(
+                f"Marked DELAYED: {item.title} by {delay_minutes} minutes. "
+                f"{_format_next_for_whatsapp(updated_today.next_item)}"
+            )
+        if command == "MOVE":
+            if len(args) < 2:
+                return _twiml_message("Usage: MOVE <item> <HH:MM>")
+            target_time = args[-1]
+            parsed_time = _parse_move_time(target_time)
+            if parsed_time is None:
+                return _twiml_message("Usage: MOVE <item> <HH:MM>")
+            query = " ".join(args[:-1]).strip()
+            item = _find_timeline_item(timeline, query)
+            if item is None:
+                return _twiml_message(f"Could not find item matching '{query}'.")
+            if item.item_type != "care_activity":
+                return _twiml_message("MOVE is supported only for care activities. Use DELAY for medication windows.")
+            hour, minute = parsed_time
+            log = STORE.get_log(patient_id, day)
+            updated = _refresh_day_state(plan, log, STORE.now())
+            instance = next((entry for entry in updated.care_activity_instances if entry.instance_id == item.item_id), None)
+            if instance is None:
+                return _twiml_message("Care activity instance not found.")
+            moved = datetime.fromisoformat(f"{day}T00:00:00").replace(
+                hour=hour, minute=minute, second=0, microsecond=0, tzinfo=timezone
+            )
+            instance.scheduled_datetime = moved.astimezone(UTC).isoformat()
+            instance.local_scheduled_time = moved.isoformat()
+            STORE.append_event(
+                patient_id=patient_id,
+                date=day,
+                event_type=ReviewActionType.REVIEW_STATUS_UPDATED,
+                message="care activity moved via whatsapp command",
+                metadata={"item_id": item.item_id, "target_time": target_time},
+            )
+            refreshed = careos_today(patient_id)
+            return _twiml_message(
+                f"Moved {instance.title} to {target_time}. {_format_next_for_whatsapp(refreshed.next_item)}"
+            )
+
     target_message: MedicationMessageRecord | None = None
     if original_sid:
         target_message = _find_message_by_id(patient_id, original_sid)
     if target_message is None:
         target_message = _find_recent_message_for_sender(patient_id, _normalize_phone(from_number))
     if target_message is None:
-        xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Message>Could not map reply to a medication window. Reply TAKEN / DELAYED / SKIPPED / UNSURE to the latest reminder.</Message></Response>"
-        return Response(content=xml, media_type="text/xml")
+        return _twiml_message(
+            "Could not map reply to a medication window. Reply TAKEN / DELAYED / SKIPPED / UNSURE, or use a command. " + _whatsapp_help_text()
+        )
 
     normalized = ""
     if target_message.message_kind is MessageKind.CARE_ACTIVITY_REMINDER:
         care_confirmation = normalize_care_confirmation(body)
         if care_confirmation is None:
-            xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Message>Unrecognized reply. Please reply DONE, DELAYED, or SKIPPED.</Message></Response>"
-            return Response(content=xml, media_type="text/xml")
+            return _twiml_message("Unrecognized reply. Please reply DONE, DELAYED, or SKIPPED.")
         care_activity_confirmation(
             patient_id,
             CareActivityConfirmationRequest(
@@ -1473,8 +2015,7 @@ async def twilio_whatsapp_inbound(request: Request) -> Response:
         try:
             normalized = MESSAGE_TRANSPORT.receive_confirmation(body)
         except ValueError:
-            xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Message>Unrecognized reply. Please reply TAKEN, DELAYED, SKIPPED, or UNSURE.</Message></Response>"
-            return Response(content=xml, media_type="text/xml")
+            return _twiml_message("Unrecognized reply. Please reply TAKEN, DELAYED, SKIPPED, or UNSURE.")
 
         payload = MessageConfirmationRequest(
             window_id=target_message.window_id,
@@ -1518,14 +2059,12 @@ async def twilio_whatsapp_inbound(request: Request) -> Response:
         linked_message_id=target_message.message_id,
     )
 
-    xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Message>Received. Medication window confirmation recorded.</Message></Response>"
-    return Response(content=xml, media_type="text/xml")
+    return _twiml_message("Received. Medication window confirmation recorded.")
 
 
 @app.post("/webhooks/twilio/whatsapp/status")
 async def twilio_whatsapp_status(request: Request) -> dict[str, str]:
-    form = await request.form()
-    form_data = {key: str(value) for key, value in form.items()}
+    form_data = await _extract_form_data(request)
     if not _validate_twilio_request_signature(request, form_data):
         raise HTTPException(status_code=403, detail="invalid twilio signature")
 
@@ -1533,27 +2072,36 @@ async def twilio_whatsapp_status(request: Request) -> dict[str, str]:
     status = form_data.get("MessageStatus", "queued")
 
     updated = False
+    matched_patient_id: str | None = None
+    matched_message: MedicationMessageRecord | None = None
+    matched_created_at: datetime | None = None
     for patient in STORE.list_patients():
         message = _find_message_by_id(patient.patient_id, message_sid)
         if message is None:
             continue
-        message.delivery_status = _map_twilio_delivery_status(status)
-        message.metadata["twilio_status"] = status
+        created_at = datetime.fromisoformat(message.created_at)
+        if matched_created_at is None or created_at > matched_created_at:
+            matched_created_at = created_at
+            matched_patient_id = patient.patient_id
+            matched_message = message
+
+    if matched_message is not None and matched_patient_id is not None:
+        matched_message.delivery_status = _map_twilio_delivery_status(status)
+        matched_message.metadata["twilio_status"] = status
         STORE.append_event(
-            patient_id=patient.patient_id,
-            date=message.date,
+            patient_id=matched_patient_id,
+            date=matched_message.date,
             event_type=ReviewActionType.MEDICATION_ALERT_RAISED,
             message="twilio delivery status updated",
-            metadata={"message_id": message_sid, "delivery_status": message.delivery_status.value},
+            metadata={"message_id": message_sid, "delivery_status": matched_message.delivery_status.value},
         )
         logger.info(
             "medication_delivery_status_updated",
-            patient_id=patient.patient_id,
+            patient_id=matched_patient_id,
             message_id=message_sid,
-            delivery_status=message.delivery_status.value,
+            delivery_status=matched_message.delivery_status.value,
         )
         updated = True
-        break
 
     return {"status": "ok" if updated else "ignored", "message_sid": message_sid}
 

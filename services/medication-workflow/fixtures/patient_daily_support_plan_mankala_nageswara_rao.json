@@ -145,6 +145,42 @@
         "escalation_policy": null
       },
       {
+        "activity_id": "lunch_1300",
+        "title": "Lunch",
+        "category": "meal",
+        "schedule": "13:00",
+        "duration_minutes": 30,
+        "instruction": "Serve low-salt lunch and hydration",
+        "frequency": "daily",
+        "priority": "important",
+        "confirmation_required": true,
+        "escalation_policy": "Caregiver follow-up if skipped"
+      },
+      {
+        "activity_id": "dinner_1930",
+        "title": "Dinner",
+        "category": "meal",
+        "schedule": "19:30",
+        "duration_minutes": 30,
+        "instruction": "Serve early dinner before night medications",
+        "frequency": "daily",
+        "priority": "important",
+        "confirmation_required": true,
+        "escalation_policy": "Caregiver follow-up if skipped"
+      },
+      {
+        "activity_id": "symptom_check_2030",
+        "title": "Symptom Check",
+        "category": "symptom_check",
+        "schedule": "20:30",
+        "duration_minutes": 10,
+        "instruction": "Check chest pain, breathlessness, dizziness, swelling, and weakness",
+        "frequency": "daily",
+        "priority": "critical",
+        "confirmation_required": true,
+        "escalation_policy": "Escalate to urgent triage if concerning symptoms are reported"
+      },
+      {
         "activity_id": "bedtime_2200",
         "title": "Bedtime Routine",
         "category": "sleep",

@@ -79,8 +79,7 @@ def ensure_daily_care_activity_instances(plan: MedicationPlan, log: DailyMedicat
         scheduled_utc = scheduled_local.astimezone(UTC).isoformat()
         existing = existing_by_activity.get(activity.activity_id)
         if existing is not None:
-            existing.scheduled_datetime = scheduled_utc
-            existing.local_scheduled_time = scheduled_local.isoformat()
+            # Preserve in-day caregiver adaptations (move/delay) for existing instances.
             existing.title = activity.title
             existing.category = activity.category
             existing.duration_minutes = activity.duration_minutes

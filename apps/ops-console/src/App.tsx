@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import {
+  type CareOsTodayResponse,
   type DaySimulationReport,
   type FinalDispositionDecision,
   type MedicationDashboardView,
@@ -58,6 +59,7 @@ export function App(): JSX.Element {
   const [medicationTimeline, setMedicationTimeline] = useState<MedicationTimelineResponse | null>(null);
   const [medicationToday, setMedicationToday] = useState<MedicationTodayView | null>(null);
   const [unifiedTimeline, setUnifiedTimeline] = useState<UnifiedDailyTimelineResponse | null>(null);
+  const [careOsToday, setCareOsToday] = useState<CareOsTodayResponse | null>(null);
   const [medicationNotifications, setMedicationNotifications] = useState<any[]>([]);
   const [medicationMessages, setMedicationMessages] = useState<MedicationMessageRecord[]>([]);
   const [dayReport, setDayReport] = useState<DaySimulationReport | null>(null);
@@ -120,7 +122,7 @@ export function App(): JSX.Element {
 
   async function refreshMedication(): Promise<void> {
     try {
-      const [dashboard, timeline, todayView, notifications, report, messages, time, unified] = await Promise.all([
+      const [dashboard, timeline, todayView, notifications, report, messages, time, unified, careOs] = await Promise.all([
         api.getMedicationDashboard(patientId, dashboardDate),
         api.getMedicationTimeline(patientId, dashboardDate),
         api.getMedicationToday(patientId),
@@ -128,7 +130,8 @@ export function App(): JSX.Element {
         api.getMedicationSimulationDayReport(patientId, dashboardDate),
         api.getMedicationMessages(patientId, dashboardDate),
         api.getSimulatedTime(),
-        api.getUnifiedDailyTimeline(patientId, dashboardDate)
+        api.getUnifiedDailyTimeline(patientId, dashboardDate),
+        api.getCareOsToday(patientId)
       ]);
       setMedicationDashboard(dashboard);
       setMedicationTimeline(timeline);
@@ -138,6 +141,7 @@ export function App(): JSX.Element {
       setMedicationMessages(messages);
       setSimTime(time);
       setUnifiedTimeline(unified);
+      setCareOsToday(careOs);
       setErrorMessage("");
     } catch (error) {
       setErrorMessage((error as Error).message);
@@ -270,6 +274,15 @@ export function App(): JSX.Element {
         confirmation: messageReply.toLowerCase(),
         note: "simulated from ops console"
       });
+      await refreshMedication();
+    } catch (error) {
+      setErrorMessage((error as Error).message);
+    }
+  }
+
+  async function completeCareOsItem(itemId: string): Promise<void> {
+    try {
+      await api.completeCareOsItem(patientId, itemId);
       await refreshMedication();
     } catch (error) {
       setErrorMessage((error as Error).message);
@@ -469,12 +482,18 @@ export function App(): JSX.Element {
           </div>
           <div>
             <h3>Unified Daily Care Plan</h3>
+            {careOsToday ? (
+              <p>
+                Completed: {careOsToday.completed_items.length} | Pending: {careOsToday.pending_items.length} | Overdue: {careOsToday.overdue_items.length}
+              </p>
+            ) : null}
             {unifiedTimeline ? (
               <ul>
                 {unifiedTimeline.items.map((item) => (
                   <li key={item.item_id}>
                     <strong>{item.slot_time}</strong> [{item.item_type}] {item.title}{" "}
                     <span className={`badge badge-${item.status}`}>{item.status}</span>
+                    <button onClick={() => void completeCareOsItem(item.item_id)}>Done</button>
                   </li>
                 ))}
               </ul>
