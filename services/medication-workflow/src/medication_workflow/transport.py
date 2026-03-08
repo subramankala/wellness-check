@@ -135,7 +135,7 @@ class WhatsAppMessageTransport:
         return normalized if normalized.startswith("whatsapp:") else f"whatsapp:{normalized}"
 
     def _template_sid_for_kind(self, kind: MessageKind) -> str:
-        if kind is MessageKind.DUE_REMINDER:
+        if kind in {MessageKind.DUE_REMINDER, MessageKind.CARE_ACTIVITY_REMINDER}:
             return self._template_due_sid
         if kind is MessageKind.OVERDUE_FOLLOWUP:
             return self._template_followup_sid

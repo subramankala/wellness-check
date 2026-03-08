@@ -75,10 +75,31 @@ export type MedicationTodayView = {
   due_now: any[];
   overdue: any[];
   completed: any[];
+  care_activities_due_now: any[];
+  care_activities_overdue: any[];
   symptom_alerts: any[];
   caregiver_action_needed: string[];
   caregiver_actions: any[];
+  unified_daily_plan: UnifiedDailyTimelineResponse | null;
   end_of_day_summary: Record<string, unknown>;
+};
+
+export type UnifiedDailyTimelineResponse = {
+  patient_id: string;
+  date: string;
+  patient_timezone: string;
+  local_now: string;
+  items: Array<{
+    order_key: string;
+    item_type: string;
+    item_id: string;
+    slot_time: string;
+    title: string;
+    category: string;
+    status: string;
+    priority: string;
+    details: Record<string, string>;
+  }>;
 };
 
 export type DaySimulationReport = {
@@ -102,7 +123,11 @@ export type MedicationMessageRecord = {
   window_slot_time: string;
   recipient_role: "patient" | "caregiver";
   channel_type: string;
-  message_kind: "due_reminder" | "overdue_followup" | "confirmation_received";
+  message_kind:
+    | "due_reminder"
+    | "overdue_followup"
+    | "confirmation_received"
+    | "care_activity_reminder";
   content: string;
   delivery_status: string;
   created_at: string;
@@ -185,6 +210,14 @@ export class RuntimeApiClient {
     return (await response.json()) as MedicationTimelineResponse;
   }
 
+  async getUnifiedDailyTimeline(patientId: string, date: string): Promise<UnifiedDailyTimelineResponse> {
+    const response = await fetch(`${this.medicationBaseUrl}/medication/${patientId}/daily-care-timeline?date=${date}`);
+    if (!response.ok) {
+      throw new Error(`Failed to load unified daily timeline for ${patientId}`);
+    }
+    return (await response.json()) as UnifiedDailyTimelineResponse;
+  }
+
   async getMedicationToday(patientId: string): Promise<MedicationTodayView> {
     const response = await fetch(`${this.medicationBaseUrl}/medication/${patientId}/today`);
     if (!response.ok) {
@@ -237,6 +270,17 @@ export class RuntimeApiClient {
     });
     if (!response.ok) {
       throw new Error(`Failed to submit message confirmation for ${patientId}`);
+    }
+  }
+
+  async submitCareActivityConfirmation(patientId: string, payload: Record<string, unknown>): Promise<void> {
+    const response = await fetch(`${this.medicationBaseUrl}/medication/${patientId}/care-activity-confirmation`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to submit care activity confirmation for ${patientId}`);
     }
   }
 

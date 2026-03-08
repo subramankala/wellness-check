@@ -1,0 +1,173 @@
+{
+  "patient": {
+    "patient_id": "patient_discharge_001",
+    "display_name": "Mankala Nageswara Rao",
+    "timezone": "Asia/Kolkata",
+    "patient_contact": "+910000000001",
+    "caregiver_name": "Primary Caregiver",
+    "caregiver_contact": "+910000000000",
+    "created_at": "2026-03-07T08:00:00+05:30",
+    "notes": "Daily support plan with medication and routine care activities for post-cardiac discharge"
+  },
+  "plan": {
+    "patient_id": "patient_discharge_001",
+    "plan_id": "plan_support_routine_v1",
+    "workflow_status": "active",
+    "timezone": "Asia/Kolkata",
+    "created_at": "2026-03-07T08:00:00+05:30",
+    "medications": [
+      {
+        "entry_id": "pantop_0700",
+        "display_name": "Pantoprazole 40mg",
+        "generic_name": "pantoprazole 40mg",
+        "medication_name": "PANTOP 40MG TAB",
+        "dose_instructions": "1 tablet before food",
+        "scheduled_time": "07:00",
+        "meal_constraint": "before_meal",
+        "priority": "routine",
+        "criticality_level": "routine",
+        "monitoring_notes": "Morning gastric protection",
+        "missed_dose_policy": "Take before next meal and log",
+        "side_effect_watch_items": ["nausea"]
+      },
+      {
+        "entry_id": "brilinta_0800",
+        "display_name": "Brilinta 90mg (Morning)",
+        "generic_name": "ticagrelor 90mg",
+        "medication_name": "BRILINTA 90MG TAB",
+        "dose_instructions": "1 tablet after food",
+        "scheduled_time": "08:00",
+        "meal_constraint": "after_meal",
+        "priority": "critical",
+        "criticality_level": "critical",
+        "monitoring_notes": "Antiplatelet",
+        "missed_dose_policy": "Notify caregiver immediately",
+        "side_effect_watch_items": ["bleeding", "weakness"]
+      },
+      {
+        "entry_id": "cardivas_0800",
+        "display_name": "Cardivas 3.125mg (Morning)",
+        "generic_name": "carvedilol 3.125mg",
+        "medication_name": "CARDIVAS 3.125MG TAB",
+        "dose_instructions": "1/2 tablet after food",
+        "scheduled_time": "08:00",
+        "meal_constraint": "after_meal",
+        "priority": "critical",
+        "criticality_level": "critical",
+        "monitoring_notes": "Blood pressure and pulse watch",
+        "missed_dose_policy": "Notify caregiver immediately",
+        "side_effect_watch_items": ["dizziness"]
+      }
+    ],
+    "care_activities": [
+      {
+        "activity_id": "breakfast_0800",
+        "title": "Breakfast",
+        "category": "meal",
+        "schedule": "08:00",
+        "duration_minutes": 20,
+        "instruction": "Serve low-salt breakfast before after-meal medications",
+        "frequency": "daily",
+        "priority": "important",
+        "confirmation_required": true,
+        "escalation_policy": "Caregiver follow-up if skipped"
+      },
+      {
+        "activity_id": "morning_walk_1000",
+        "title": "Morning Walk",
+        "category": "activity",
+        "schedule": "10:00",
+        "duration_minutes": 25,
+        "instruction": "Supervised light walk for 20-25 minutes",
+        "frequency": "daily",
+        "priority": "routine",
+        "confirmation_required": true,
+        "escalation_policy": "Reschedule within 2 hours if delayed"
+      },
+      {
+        "activity_id": "physio_1500",
+        "title": "Physio Session",
+        "category": "physio",
+        "schedule": "15:00",
+        "duration_minutes": 30,
+        "instruction": "Breathing and mobility exercises",
+        "frequency": "daily",
+        "priority": "important",
+        "confirmation_required": true,
+        "escalation_policy": "Caregiver re-attempt and log barrier"
+      },
+      {
+        "activity_id": "wound_dressing_2000",
+        "title": "Wound Dressing",
+        "category": "wound_care",
+        "schedule": "20:00",
+        "duration_minutes": 15,
+        "instruction": "Clean dressing site and apply fresh sterile dressing",
+        "frequency": "daily",
+        "priority": "critical",
+        "confirmation_required": true,
+        "escalation_policy": "Escalate to clinician review if missed"
+      },
+      {
+        "activity_id": "bp_check_0900",
+        "title": "Blood Pressure Check",
+        "category": "vitals_check",
+        "schedule": "09:00",
+        "duration_minutes": 10,
+        "instruction": "Record BP and pulse in caregiver log",
+        "frequency": "daily",
+        "priority": "important",
+        "confirmation_required": true,
+        "escalation_policy": "Repeat check after 15 minutes if abnormal"
+      },
+      {
+        "activity_id": "sugar_check_2100",
+        "title": "Blood Sugar Check",
+        "category": "test",
+        "schedule": "21:00",
+        "duration_minutes": 10,
+        "instruction": "Check and record post-dinner blood sugar",
+        "frequency": "daily",
+        "priority": "important",
+        "confirmation_required": true,
+        "escalation_policy": "Caregiver follow-up if missed"
+      },
+      {
+        "activity_id": "hydration_1100",
+        "title": "Hydration Reminder",
+        "category": "hydration",
+        "schedule": "11:00",
+        "duration_minutes": 5,
+        "instruction": "Drink one glass of water unless fluid-restricted",
+        "frequency": "daily",
+        "priority": "routine",
+        "confirmation_required": false,
+        "escalation_policy": null
+      },
+      {
+        "activity_id": "bedtime_2200",
+        "title": "Bedtime Routine",
+        "category": "sleep",
+        "schedule": "22:00",
+        "duration_minutes": 20,
+        "instruction": "Wind down, medication check, and sleep prep",
+        "frequency": "daily",
+        "priority": "routine",
+        "confirmation_required": true,
+        "escalation_policy": "Caregiver follow-up if repeatedly delayed"
+      },
+      {
+        "activity_id": "followup_test_1030",
+        "title": "Follow-up Lab Appointment",
+        "category": "appointment",
+        "schedule": "10:30",
+        "duration_minutes": 60,
+        "instruction": "Attend scheduled follow-up blood tests",
+        "frequency": "weekly",
+        "priority": "important",
+        "confirmation_required": true,
+        "escalation_policy": "Reschedule and notify clinician team"
+      }
+    ]
+  }
+}

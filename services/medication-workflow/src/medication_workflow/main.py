@@ -8,7 +8,14 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 
 from medication_workflow.alerts import generate_alerts
 from medication_workflow.notifications import notifications_from_alerts
-from medication_workflow.scheduler import classify_reminder_status, ensure_daily_reminders, parse_hhmm
+from medication_workflow.scheduler import (
+    classify_care_activity_status,
+    classify_reminder_status,
+    ensure_daily_care_activity_instances,
+    ensure_daily_reminders,
+    normalize_care_confirmation,
+    parse_hhmm,
+)
 from medication_workflow.store import MedicationWorkflowStore
 from medication_workflow.transport import (
     MessageTransport,
@@ -20,6 +27,10 @@ from shared_types import (
     AdherenceAlert,
     AdministrationWindow,
     AdvanceSimulatedTimeRequest,
+    CareActivityConfirmation,
+    CareActivityConfirmationRequest,
+    CareActivityConfirmationStatus,
+    CareActivityInstance,
     ChannelType,
     CaregiverActionRecommendation,
     CaregiverNotificationEvent,
@@ -54,6 +65,8 @@ from shared_types import (
     SideEffectCheckin,
     SideEffectCheckinRequest,
     SimulatedTimeState,
+    UnifiedDailyTimelineItem,
+    UnifiedDailyTimelineResponse,
     UpdateMedicationScheduleEntryRequest,
     configure_logging,
     get_logger,
@@ -224,6 +237,7 @@ def _today_date_string() -> str:
 
 def _refresh_day_state(plan: MedicationPlan, log: DailyMedicationLog, at: datetime) -> DailyMedicationLog:
     ensure_daily_reminders(plan, log)
+    ensure_daily_care_activity_instances(plan, log)
 
     completion_ids = {
         confirmation.reminder_id
@@ -233,6 +247,24 @@ def _refresh_day_state(plan: MedicationPlan, log: DailyMedicationLog, at: dateti
 
     for reminder in log.reminders:
         reminder.status = classify_reminder_status(reminder, at=at, completion_reminder_ids=completion_ids)
+
+    completed_care_instance_ids = {
+        confirmation.instance_id
+        for confirmation in log.care_activity_confirmations
+        if confirmation.confirmation_status in {CareActivityConfirmationStatus.DONE, CareActivityConfirmationStatus.DELAYED}
+    }
+    skipped_care_instance_ids = {
+        confirmation.instance_id
+        for confirmation in log.care_activity_confirmations
+        if confirmation.confirmation_status is CareActivityConfirmationStatus.SKIPPED
+    }
+    for instance in log.care_activity_instances:
+        instance.status = classify_care_activity_status(
+            instance,
+            at=at,
+            completed_instance_ids=completed_care_instance_ids,
+            skipped_instance_ids=skipped_care_instance_ids,
+        )
 
     alerts, escalations = generate_alerts(log)
     log.alerts = alerts
@@ -314,6 +346,25 @@ def _validate_plan_entries(plan: MedicationPlan) -> None:
                 status_code=400,
                 detail=f"missing missed-dose policy for critical medication '{entry.medication_name}'",
             )
+
+    care_activity_ids: set[str] = set()
+    care_schedule_keys: set[tuple[str, str]] = set()
+    for activity in plan.care_activities:
+        parse_hhmm(activity.schedule)
+        if activity.activity_id in care_activity_ids:
+            raise HTTPException(status_code=400, detail=f"duplicate activity_id '{activity.activity_id}'")
+        care_activity_ids.add(activity.activity_id)
+        if not activity.title.strip():
+            raise HTTPException(status_code=400, detail=f"title required for activity '{activity.activity_id}'")
+        if not activity.instruction.strip():
+            raise HTTPException(status_code=400, detail=f"instruction required for activity '{activity.activity_id}'")
+        schedule_key = (activity.title.strip().lower(), activity.schedule)
+        if schedule_key in care_schedule_keys:
+            raise HTTPException(
+                status_code=400,
+                detail=f"duplicate care activity/time collision for '{activity.title}' at {activity.schedule}",
+            )
+        care_schedule_keys.add(schedule_key)
 
 
 def _append_alert_events(patient_id: str, day: str, alerts: list[AdherenceAlert]) -> None:
@@ -470,7 +521,11 @@ def _administration_windows(log: DailyMedicationLog, tz: ZoneInfo) -> list[Admin
     return windows
 
 
-def _caregiver_actions(log: DailyMedicationLog, windows: list[AdministrationWindow]) -> list[CaregiverActionRecommendation]:
+def _caregiver_actions(
+    log: DailyMedicationLog,
+    windows: list[AdministrationWindow],
+    care_instances: list[CareActivityInstance],
+) -> list[CaregiverActionRecommendation]:
     actions: list[CaregiverActionRecommendation] = []
     for window in windows:
         if window.window_status == "due":
@@ -514,6 +569,16 @@ def _caregiver_actions(log: DailyMedicationLog, windows: list[AdministrationWind
                         related_window_id=window.window_id,
                     )
                 )
+                if meal_action_type == "confirm_after_breakfast":
+                    actions.append(
+                        CaregiverActionRecommendation(
+                            action_id=f"act_{window.window_id}_food_generic",
+                            action_type="confirm_after_food",
+                            priority="medium",
+                            reason="Meal-constrained doses are due",
+                            related_window_id=window.window_id,
+                        )
+                    )
         elif window.window_status == "overdue":
             if window.window_risk_level == "high":
                 actions.append(
@@ -532,6 +597,29 @@ def _caregiver_actions(log: DailyMedicationLog, windows: list[AdministrationWind
                     priority="high",
                     reason=f"Overdue doses in {window.slot_time} window",
                     related_window_id=window.window_id,
+                )
+            )
+
+    for instance in care_instances:
+        slot = instance.local_scheduled_time[11:16] if instance.local_scheduled_time else "unknown"
+        if instance.status == "due":
+            actions.append(
+                CaregiverActionRecommendation(
+                    action_id=f"act_{instance.instance_id}_care_due",
+                    action_type="care_activity_due_now",
+                    priority="high" if instance.priority == "critical" else "medium",
+                    reason=f"{instance.title} is due at {slot}",
+                    related_window_id=instance.instance_id,
+                )
+            )
+        elif instance.status == "overdue":
+            actions.append(
+                CaregiverActionRecommendation(
+                    action_id=f"act_{instance.instance_id}_care_overdue",
+                    action_type="care_activity_overdue_follow_up_now",
+                    priority="critical" if instance.priority == "critical" else "high",
+                    reason=f"{instance.title} is overdue since {slot}",
+                    related_window_id=instance.instance_id,
                 )
             )
 
@@ -627,6 +715,68 @@ def _window_overdue_followup_message(window: AdministrationWindow) -> str:
     )
 
 
+def _care_activity_message(instance: CareActivityInstance) -> str:
+    base = f"{instance.local_scheduled_time[11:16] if instance.local_scheduled_time else ''}: {instance.title}. {instance.instruction}"
+    if instance.confirmation_required:
+        return f"{base} Reply DONE / DELAYED / SKIPPED."
+    return base
+
+
+def _build_unified_daily_timeline(
+    patient_id: str,
+    date: str,
+    timezone_name: str,
+    local_now: datetime,
+    windows: list[AdministrationWindow],
+    care_instances: list[CareActivityInstance],
+) -> UnifiedDailyTimelineResponse:
+    items: list[UnifiedDailyTimelineItem] = []
+    for window in windows:
+        items.append(
+            UnifiedDailyTimelineItem(
+                order_key=window.slot_time,
+                item_type="medication_window",
+                item_id=window.window_id,
+                slot_time=window.slot_time,
+                title=f"Medication window ({len(window.meds)} meds)",
+                category="medication",
+                status=window.window_status,
+                priority=window.window_risk_level,
+                details={
+                    "meal_rule_summary": window.meal_rule_summary,
+                    "medications": ", ".join(item.medication_name for item in window.meds),
+                },
+            )
+        )
+    for instance in care_instances:
+        slot = instance.local_scheduled_time[11:16] if instance.local_scheduled_time else "00:00"
+        items.append(
+            UnifiedDailyTimelineItem(
+                order_key=slot,
+                item_type="care_activity",
+                item_id=instance.instance_id,
+                slot_time=slot,
+                title=instance.title,
+                category=instance.category.value,
+                status=instance.status,
+                priority=instance.priority,
+                details={
+                    "instruction": instance.instruction,
+                    "frequency": instance.frequency,
+                    "confirmation_required": str(instance.confirmation_required).lower(),
+                },
+            )
+        )
+    items.sort(key=lambda item: (item.order_key, item.item_type, item.item_id))
+    return UnifiedDailyTimelineResponse(
+        patient_id=patient_id,
+        date=date,
+        patient_timezone=timezone_name,
+        local_now=local_now.isoformat(),
+        items=items,
+    )
+
+
 def _find_existing_message(
     log: DailyMedicationLog,
     *,
@@ -674,7 +824,8 @@ def _latest_overdue_followup_stage(log: DailyMedicationLog, window_id: str) -> t
         stage = message.escalation_stage
         if stage is None:
             continue
-        sent_at = datetime.fromisoformat(message.created_at)
+        logical_sent_at = message.metadata.get("workflow_sent_at", message.created_at)
+        sent_at = datetime.fromisoformat(logical_sent_at)
         if latest_time is None or sent_at > latest_time:
             latest_time = sent_at
             latest_stage = stage
@@ -934,6 +1085,7 @@ def send_due_reminders(patient_id: str) -> SendDueRemindersResponse:
     log = STORE.get_log(patient_id, day)
     updated = _refresh_day_state(plan, log, now_utc)
     windows = _administration_windows(updated, timezone)
+    due_care_instances = [item for item in updated.care_activity_instances if item.status == "due"]
 
     sent_messages: list[MedicationMessageRecord] = []
     channel_type = _transport_channel_type()
@@ -999,6 +1151,57 @@ def send_due_reminders(patient_id: str) -> SendDueRemindersResponse:
                 message="window reminder sent",
                 metadata={"window_id": window.window_id, "message_id": message.message_id},
             )
+
+    for instance in due_care_instances:
+        dedupe_key = _message_dedupe_key(
+            patient_id=patient_id,
+            day=day,
+            window_id=instance.instance_id,
+            recipient_role=RecipientRole.PATIENT,
+            channel_type=channel_type,
+            message_kind=MessageKind.CARE_ACTIVITY_REMINDER,
+        )
+        if _has_message_with_dedupe(updated, dedupe_key):
+            continue
+        recipient = _recipient_address(patient, RecipientRole.PATIENT)
+        _enforce_pilot_send_guard(
+            patient=patient,
+            log=updated,
+            day=day,
+            recipient_address=recipient,
+            channel_type=channel_type,
+        )
+        slot = instance.local_scheduled_time[11:16] if instance.local_scheduled_time else "00:00"
+        message = MESSAGE_TRANSPORT.send_message(
+            OutboundMessageRequest(
+                patient_id=patient_id,
+                date=day,
+                window_id=instance.instance_id,
+                window_slot_time=slot,
+                recipient_role=RecipientRole.PATIENT,
+                recipient_address=recipient,
+                channel_type=channel_type,
+                message_kind=MessageKind.CARE_ACTIVITY_REMINDER,
+                content=_care_activity_message(instance),
+                dedupe_key=dedupe_key,
+                escalation_stage=None,
+                metadata={
+                    "activity_id": instance.activity_id,
+                    "category": instance.category.value,
+                    "recipient_address": recipient,
+                    "last_customer_message_at": last_customer_message_at,
+                },
+            )
+        )
+        _record_message(updated, message)
+        sent_messages.append(message)
+        STORE.append_event(
+            patient_id=patient_id,
+            date=day,
+            event_type=ReviewActionType.MEDICATION_REMINDER_GENERATED,
+            message="care activity reminder sent",
+            metadata={"activity_id": instance.activity_id, "instance_id": instance.instance_id, "message_id": message.message_id},
+        )
     return SendDueRemindersResponse(
         patient_id=patient_id,
         date=day,
@@ -1085,6 +1288,7 @@ def send_overdue_critical_followups(
                     "last_customer_message_at": last_customer_message_at,
                     "escalation_stage": str(next_stage),
                     "cooldown_minutes": str(cooldown_minutes),
+                    "workflow_sent_at": now_utc.isoformat(),
                 },
             )
         )
@@ -1179,6 +1383,48 @@ def message_confirmation(patient_id: str, payload: MessageConfirmationRequest) -
     return _apply_window_confirmation(patient_id, payload)
 
 
+@app.post("/medication/{patient_id}/care-activity-confirmation", response_model=DailyMedicationLog)
+def care_activity_confirmation(patient_id: str, payload: CareActivityConfirmationRequest) -> DailyMedicationLog:
+    patient, plan = _assert_patient_and_plan(patient_id)
+    timezone_name = _patient_timezone(patient, plan)
+    timezone = _zoneinfo(timezone_name)
+    confirmed_at_utc = _parse_query_datetime(payload.confirmed_at, timezone)
+    day = _local_day_from_utc(confirmed_at_utc, timezone)
+    log = STORE.get_log(patient_id, day)
+    updated = _refresh_day_state(plan, log, confirmed_at_utc)
+
+    instance = next(
+        (item for item in updated.care_activity_instances if item.instance_id == payload.instance_id),
+        None,
+    )
+    if instance is None:
+        raise HTTPException(status_code=404, detail="care activity instance not found")
+
+    updated.care_activity_confirmations.append(
+        CareActivityConfirmation(
+            patient_id=patient_id,
+            instance_id=instance.instance_id,
+            activity_id=instance.activity_id,
+            confirmation_status=payload.confirmation,
+            confirmed_at=confirmed_at_utc.isoformat(),
+            note=payload.note,
+        )
+    )
+    STORE.append_event(
+        patient_id=patient_id,
+        date=day,
+        event_type=ReviewActionType.MEDICATION_DOSE_CONFIRMED,
+        message="care activity confirmation recorded",
+        metadata={
+            "instance_id": instance.instance_id,
+            "activity_id": instance.activity_id,
+            "confirmation": payload.confirmation.value,
+        },
+    )
+    _refresh_day_state(plan, updated, confirmed_at_utc)
+    return updated
+
+
 @app.post("/webhooks/twilio/whatsapp/inbound")
 async def twilio_whatsapp_inbound(request: Request) -> Response:
     form = await request.form()
@@ -1207,21 +1453,38 @@ async def twilio_whatsapp_inbound(request: Request) -> Response:
         xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Message>Could not map reply to a medication window. Reply TAKEN / DELAYED / SKIPPED / UNSURE to the latest reminder.</Message></Response>"
         return Response(content=xml, media_type="text/xml")
 
-    try:
-        normalized = MESSAGE_TRANSPORT.receive_confirmation(body)
-    except ValueError:
-        xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Message>Unrecognized reply. Please reply TAKEN, DELAYED, SKIPPED, or UNSURE.</Message></Response>"
-        return Response(content=xml, media_type="text/xml")
+    normalized = ""
+    if target_message.message_kind is MessageKind.CARE_ACTIVITY_REMINDER:
+        care_confirmation = normalize_care_confirmation(body)
+        if care_confirmation is None:
+            xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Message>Unrecognized reply. Please reply DONE, DELAYED, or SKIPPED.</Message></Response>"
+            return Response(content=xml, media_type="text/xml")
+        care_activity_confirmation(
+            patient_id,
+            CareActivityConfirmationRequest(
+                instance_id=target_message.window_id,
+                confirmation=care_confirmation,
+                confirmed_at=STORE.now().isoformat(),
+                note="twilio_whatsapp_inbound",
+            ),
+        )
+        normalized = care_confirmation.value.upper()
+    else:
+        try:
+            normalized = MESSAGE_TRANSPORT.receive_confirmation(body)
+        except ValueError:
+            xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Message>Unrecognized reply. Please reply TAKEN, DELAYED, SKIPPED, or UNSURE.</Message></Response>"
+            return Response(content=xml, media_type="text/xml")
 
-    payload = MessageConfirmationRequest(
-        window_id=target_message.window_id,
-        confirmation=DoseStatus(normalized.lower()),
-        responder_role=target_message.recipient_role,
-        confirmed_at=STORE.now().isoformat(),
-        message_id=target_message.message_id,
-        note="twilio_whatsapp_inbound",
-    )
-    _apply_window_confirmation(patient_id, payload)
+        payload = MessageConfirmationRequest(
+            window_id=target_message.window_id,
+            confirmation=DoseStatus(normalized.lower()),
+            responder_role=target_message.recipient_role,
+            confirmed_at=STORE.now().isoformat(),
+            message_id=target_message.message_id,
+            note="twilio_whatsapp_inbound",
+        )
+        _apply_window_confirmation(patient_id, payload)
 
     confirmation_day = target_message.date
     confirmation_log = STORE.get_log(patient_id, confirmation_day)
@@ -1462,8 +1725,18 @@ def today_view(patient_id: str) -> MedicationTodayView:
         if item.category in {"concerning_symptoms", "urgent_symptoms", "emergency_symptoms"}
     ]
     windows = _administration_windows(updated, timezone)
-    actions = _caregiver_actions(updated, windows)
+    care_due_now = [item for item in updated.care_activity_instances if item.status == "due"]
+    care_overdue = [item for item in updated.care_activity_instances if item.status == "overdue"]
+    actions = _caregiver_actions(updated, windows, updated.care_activity_instances)
     action_types = [item.action_type for item in actions]
+    unified = _build_unified_daily_timeline(
+        patient_id=patient.patient_id,
+        date=day,
+        timezone_name=timezone_name,
+        local_now=local_now,
+        windows=windows,
+        care_instances=updated.care_activity_instances,
+    )
 
     return MedicationTodayView(
         patient_id=patient.patient_id,
@@ -1474,9 +1747,12 @@ def today_view(patient_id: str) -> MedicationTodayView:
         due_now=_localize_reminders([item for item in updated.reminders if item.status == "due"], timezone),
         overdue=_localize_reminders([item for item in updated.reminders if item.status == "overdue"], timezone),
         completed=_localize_reminders([item for item in updated.reminders if item.status == "completed"], timezone),
+        care_activities_due_now=care_due_now,
+        care_activities_overdue=care_overdue,
         symptom_alerts=symptom_alerts,
         caregiver_action_needed=summary.recommended_actions + action_types,
         caregiver_actions=actions,
+        unified_daily_plan=unified,
         end_of_day_summary=summary,
     )
 
@@ -1503,6 +1779,26 @@ def timeline(patient_id: str, date: str = Query(...)) -> MedicationTimelineRespo
     log = STORE.get_log(patient_id, date)
     updated = _refresh_day_state(plan, log, STORE.now())
     return _timeline(updated, date, patient_id)
+
+
+@app.get("/medication/{patient_id}/daily-care-timeline", response_model=UnifiedDailyTimelineResponse)
+def daily_care_timeline(patient_id: str, date: str = Query(...)) -> UnifiedDailyTimelineResponse:
+    patient, plan = _assert_patient_and_plan(patient_id)
+    timezone_name = _patient_timezone(patient, plan)
+    timezone = _zoneinfo(timezone_name)
+    at_utc = datetime.fromisoformat(f"{date}T12:00:00").replace(tzinfo=timezone).astimezone(UTC)
+    local_now = at_utc.astimezone(timezone)
+    log = STORE.get_log(patient_id, date)
+    updated = _refresh_day_state(plan, log, at_utc)
+    windows = _administration_windows(updated, timezone)
+    return _build_unified_daily_timeline(
+        patient_id=patient_id,
+        date=date,
+        timezone_name=timezone_name,
+        local_now=local_now,
+        windows=windows,
+        care_instances=updated.care_activity_instances,
+    )
 
 
 @app.get("/medication/{patient_id}/log/export", response_model=DailyMedicationExportResponse)
@@ -1540,7 +1836,7 @@ def simulate_day_report(patient_id: str, date: str = Query(...)) -> DaySimulatio
         final_day=True,
     )
     windows = _administration_windows(updated, timezone)
-    actions = _caregiver_actions(updated, windows)
+    actions = _caregiver_actions(updated, windows, updated.care_activity_instances)
 
     critical_missed = [item for item in updated.alerts if item.category == "missed_critical_dose"]
     symptom_alerts = [

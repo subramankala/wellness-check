@@ -158,6 +158,94 @@ def _setup_kolkata_patient_plan(patient_id: str) -> None:
     assert response.status_code == 200
 
 
+def _kolkata_1230_plan_payload(patient_id: str) -> dict:
+    return {
+        "patient_id": patient_id,
+        "plan_id": f"plan_{patient_id}",
+        "workflow_status": "active",
+        "timezone": "Asia/Kolkata",
+        "created_at": "2026-03-07T06:30:00+05:30",
+        "medications": [
+            {
+                "entry_id": "med_1230",
+                "display_name": "Noon Med",
+                "generic_name": "testmed-noon",
+                "medication_name": "NoonMed",
+                "dose_instructions": "1 tablet after food",
+                "scheduled_time": "12:30",
+                "meal_constraint": "after_meal",
+                "priority": "important",
+                "criticality_level": "important",
+                "monitoring_notes": "timezone check",
+                "missed_dose_policy": "log and follow up",
+                "side_effect_watch_items": [],
+            }
+        ],
+    }
+
+
+def _setup_kolkata_1230_patient_plan(patient_id: str) -> None:
+    client.post("/medication/patient", json=_kolkata_patient_payload(patient_id))
+    response = client.post(f"/medication/patient/{patient_id}/plan", json=_kolkata_1230_plan_payload(patient_id))
+    assert response.status_code == 200
+
+
+def _care_activity_plan_payload(patient_id: str) -> dict:
+    plan = _plan_payload(patient_id)
+    plan["timezone"] = "Asia/Kolkata"
+    plan["care_activities"] = [
+        {
+            "activity_id": "breakfast_0800",
+            "title": "Breakfast",
+            "category": "meal",
+            "schedule": "08:00",
+            "duration_minutes": 20,
+            "instruction": "Have breakfast with low salt meal",
+            "frequency": "daily",
+            "priority": "important",
+            "confirmation_required": True,
+            "escalation_policy": "caregiver follow-up if skipped",
+        },
+        {
+            "activity_id": "walk_1000",
+            "title": "Morning Walk",
+            "category": "activity",
+            "schedule": "10:00",
+            "duration_minutes": 25,
+            "instruction": "Walk slowly for 20-25 minutes",
+            "frequency": "daily",
+            "priority": "routine",
+            "confirmation_required": True,
+            "escalation_policy": "reschedule once if delayed",
+        },
+        {
+            "activity_id": "dressing_2000",
+            "title": "Wound Dressing",
+            "category": "wound_care",
+            "schedule": "20:00",
+            "duration_minutes": 15,
+            "instruction": "Daily dressing with clean supplies",
+            "frequency": "daily",
+            "priority": "critical",
+            "confirmation_required": True,
+            "escalation_policy": "caregiver immediate follow-up if missed",
+        },
+    ]
+    return plan
+
+
+def _setup_patient_plan_with_care(patient_id: str) -> None:
+    payload = _patient_payload(patient_id)
+    payload["timezone"] = "Asia/Kolkata"
+    payload["created_at"] = "2026-03-07T08:00:00+05:30"
+    client.post("/medication/patient", json=payload)
+    response = client.post(
+        f"/medication/patient/{patient_id}/plan",
+        json=_care_activity_plan_payload(patient_id),
+    )
+    assert response.status_code == 200
+
+
 def test_strict_real_patient_plan_validation() -> None:
     patient_id = "pilot_validation"
     client.post("/medication/patient", json=_patient_payload(patient_id))
@@ -380,6 +468,41 @@ def test_kolkata_local_time_serialization_in_today_and_due_now() -> None:
         assert due_now_body["next_upcoming"]["local_scheduled_time"].endswith("+05:30")
 
 
+def test_kolkata_scheduled_time_interpreted_as_local_wall_clock() -> None:
+    patient_id = "tz_1230_local_wall_clock"
+    _setup_kolkata_1230_patient_plan(patient_id)
+    schedule = client.get(f"/medication/{patient_id}/schedule", params={"date": "2026-03-07"}).json()
+
+    reminder = schedule["reminders"][0]
+    assert reminder["local_scheduled_time"] == "2026-03-07T12:30:00+05:30"
+    assert reminder["scheduled_datetime"] == "2026-03-07T07:00:00+00:00"
+
+
+def test_kolkata_due_now_works_with_corrected_1230_time() -> None:
+    patient_id = "tz_1230_due_now"
+    _setup_kolkata_1230_patient_plan(patient_id)
+
+    due_now = client.get(
+        f"/medication/{patient_id}/due-now",
+        params={"at": "2026-03-07T12:35:00+05:30"},
+    )
+    assert due_now.status_code == 200
+    body = due_now.json()
+    assert len(body["due_now"]) == 1
+    assert body["due_now"][0]["local_scheduled_time"] == "2026-03-07T12:30:00+05:30"
+
+
+def test_kolkata_send_due_reminders_uses_corrected_1230_window_time() -> None:
+    patient_id = "tz_1230_send_due"
+    _setup_kolkata_1230_patient_plan(patient_id)
+    client.post("/medication/simulated-time/set", json={"simulated_now": "2026-03-07T12:35:00+05:30"})
+
+    send = client.post(f"/medication/{patient_id}/send-due-reminders")
+    assert send.status_code == 200
+    body = send.json()
+    assert any(msg["window_slot_time"] == "12:30" for msg in body["sent_messages"])
+
+
 def test_pre_first_dose_summary_does_not_show_misleading_zero_percent() -> None:
     patient_id = "tz_pre_dose_summary"
     _setup_kolkata_patient_plan(patient_id)
@@ -559,3 +682,53 @@ def test_mock_transport_stores_delivery_records_correctly() -> None:
     assert all(item["delivery_status"] == "delivered" for item in body)
     assert all(item["dedupe_key"] for item in body)
     assert len({item["dedupe_key"] for item in body}) == len(body)
+
+
+def test_unified_daily_timeline_combines_medication_windows_and_care_activities() -> None:
+    patient_id = "care_timeline_unified"
+    _setup_patient_plan_with_care(patient_id)
+
+    response = client.get(
+        f"/medication/{patient_id}/daily-care-timeline",
+        params={"date": "2026-03-07"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    item_types = {item["item_type"] for item in body["items"]}
+    assert "medication_window" in item_types
+    assert "care_activity" in item_types
+    slots = [item["slot_time"] for item in body["items"]]
+    assert slots == sorted(slots)
+
+
+def test_send_due_reminders_includes_due_care_activity_messages() -> None:
+    patient_id = "care_due_reminders"
+    _setup_patient_plan_with_care(patient_id)
+    client.post("/medication/simulated-time/set", json={"simulated_now": "2026-03-07T08:05:00+05:30"})
+
+    response = client.post(f"/medication/{patient_id}/send-due-reminders")
+    assert response.status_code == 200
+    messages = response.json()["sent_messages"]
+    assert any(item["message_kind"] == "care_activity_reminder" for item in messages)
+
+
+def test_care_activity_confirmation_done_marks_activity_completed() -> None:
+    patient_id = "care_confirm_done"
+    _setup_patient_plan_with_care(patient_id)
+    client.post("/medication/simulated-time/set", json={"simulated_now": "2026-03-07T08:10:00+05:30"})
+
+    today = client.get(f"/medication/{patient_id}/today").json()
+    instance = next(item for item in today["care_activities_due_now"] if item["activity_id"] == "breakfast_0800")
+    confirm = client.post(
+        f"/medication/{patient_id}/care-activity-confirmation",
+        json={"instance_id": instance["instance_id"], "confirmation": "done"},
+    )
+    assert confirm.status_code == 200
+
+    after = client.get(f"/medication/{patient_id}/today").json()
+    updated = next(
+        item
+        for item in after["unified_daily_plan"]["items"]
+        if item["item_type"] == "care_activity" and item["item_id"] == instance["instance_id"]
+    )
+    assert updated["status"] == "completed"

@@ -117,6 +117,25 @@ class MedicationCriticality(StrEnum):
     CRITICAL = "critical"
 
 
+class CareActivityCategory(StrEnum):
+    MEAL = "meal"
+    ACTIVITY = "activity"
+    PHYSIO = "physio"
+    WOUND_CARE = "wound_care"
+    VITALS_CHECK = "vitals_check"
+    SYMPTOM_CHECK = "symptom_check"
+    HYDRATION = "hydration"
+    SLEEP = "sleep"
+    APPOINTMENT = "appointment"
+    TEST = "test"
+
+
+class CareActivityConfirmationStatus(StrEnum):
+    DONE = "done"
+    DELAYED = "delayed"
+    SKIPPED = "skipped"
+
+
 class RecipientRole(StrEnum):
     PATIENT = "patient"
     CAREGIVER = "caregiver"
@@ -138,6 +157,7 @@ class MessageKind(StrEnum):
     DUE_REMINDER = "due_reminder"
     OVERDUE_FOLLOWUP = "overdue_followup"
     CONFIRMATION_RECEIVED = "confirmation_received"
+    CARE_ACTIVITY_REMINDER = "care_activity_reminder"
 
 
 class HealthResponse(BaseModel):
@@ -284,6 +304,19 @@ class MedicationScheduleEntry(BaseModel):
     side_effect_watch_items: list[str] = Field(default_factory=list)
 
 
+class CareActivity(BaseModel):
+    activity_id: str
+    title: str
+    category: CareActivityCategory
+    schedule: str
+    duration_minutes: int | None = None
+    instruction: str
+    frequency: str
+    priority: str = "routine"
+    confirmation_required: bool = True
+    escalation_policy: str | None = None
+
+
 class MedicationPlan(BaseModel):
     patient_id: str
     plan_id: str
@@ -291,6 +324,7 @@ class MedicationPlan(BaseModel):
     timezone: str = "UTC"
     created_at: str
     medications: list[MedicationScheduleEntry] = Field(default_factory=list)
+    care_activities: list[CareActivity] = Field(default_factory=list)
 
 
 class PatientRecord(BaseModel):
@@ -318,6 +352,24 @@ class MedicationReminder(BaseModel):
     local_scheduled_time: str | None = None
 
 
+class CareActivityInstance(BaseModel):
+    instance_id: str
+    patient_id: str
+    plan_id: str
+    activity_id: str
+    title: str
+    category: CareActivityCategory
+    scheduled_datetime: str
+    local_scheduled_time: str | None = None
+    duration_minutes: int | None = None
+    instruction: str
+    frequency: str
+    priority: str = "routine"
+    confirmation_required: bool = True
+    escalation_policy: str | None = None
+    status: str = "upcoming"
+
+
 class DoseConfirmation(BaseModel):
     patient_id: str
     reminder_id: str
@@ -325,6 +377,15 @@ class DoseConfirmation(BaseModel):
     dose_status: DoseStatus
     confirmed_at: str
     meal_condition_satisfied: bool | None = None
+    note: str = ""
+
+
+class CareActivityConfirmation(BaseModel):
+    patient_id: str
+    instance_id: str
+    activity_id: str
+    confirmation_status: CareActivityConfirmationStatus
+    confirmed_at: str
     note: str = ""
 
 
@@ -381,6 +442,8 @@ class DailyMedicationLog(BaseModel):
     date: str
     reminders: list[MedicationReminder] = Field(default_factory=list)
     confirmations: list[DoseConfirmation] = Field(default_factory=list)
+    care_activity_instances: list[CareActivityInstance] = Field(default_factory=list)
+    care_activity_confirmations: list[CareActivityConfirmation] = Field(default_factory=list)
     side_effect_checkins: list[SideEffectCheckin] = Field(default_factory=list)
     alerts: list[AdherenceAlert] = Field(default_factory=list)
     notifications: list[CaregiverNotificationEvent] = Field(default_factory=list)
@@ -442,6 +505,26 @@ class MedicationTimelineResponse(BaseModel):
     timeline: list[MedicationTimelineItem] = Field(default_factory=list)
 
 
+class UnifiedDailyTimelineItem(BaseModel):
+    order_key: str
+    item_type: str
+    item_id: str
+    slot_time: str
+    title: str
+    category: str
+    status: str
+    priority: str
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class UnifiedDailyTimelineResponse(BaseModel):
+    patient_id: str
+    date: str
+    patient_timezone: str = "UTC"
+    local_now: str = ""
+    items: list[UnifiedDailyTimelineItem] = Field(default_factory=list)
+
+
 class AdministrationWindow(BaseModel):
     window_id: str
     slot_time: str
@@ -501,6 +584,13 @@ class MessageConfirmationRequest(BaseModel):
     message_id: str | None = None
 
 
+class CareActivityConfirmationRequest(BaseModel):
+    instance_id: str
+    confirmation: CareActivityConfirmationStatus
+    confirmed_at: str | None = None
+    note: str = ""
+
+
 class SendDueRemindersResponse(BaseModel):
     patient_id: str
     date: str
@@ -526,9 +616,12 @@ class MedicationTodayView(BaseModel):
     due_now: list[MedicationReminder] = Field(default_factory=list)
     overdue: list[MedicationReminder] = Field(default_factory=list)
     completed: list[MedicationReminder] = Field(default_factory=list)
+    care_activities_due_now: list[CareActivityInstance] = Field(default_factory=list)
+    care_activities_overdue: list[CareActivityInstance] = Field(default_factory=list)
     symptom_alerts: list[AdherenceAlert] = Field(default_factory=list)
     caregiver_action_needed: list[str] = Field(default_factory=list)
     caregiver_actions: list[CaregiverActionRecommendation] = Field(default_factory=list)
+    unified_daily_plan: UnifiedDailyTimelineResponse | None = None
     end_of_day_summary: CaregiverSummary
 
 

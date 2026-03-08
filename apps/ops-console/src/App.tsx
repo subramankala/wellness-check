@@ -12,6 +12,7 @@ import {
   type SessionReviewStatus,
   type SessionSummaryView,
   type SimulatedTimeState,
+  type UnifiedDailyTimelineResponse,
   RuntimeApiClient
 } from "./api";
 
@@ -56,6 +57,7 @@ export function App(): JSX.Element {
   const [medicationDashboard, setMedicationDashboard] = useState<MedicationDashboardView | null>(null);
   const [medicationTimeline, setMedicationTimeline] = useState<MedicationTimelineResponse | null>(null);
   const [medicationToday, setMedicationToday] = useState<MedicationTodayView | null>(null);
+  const [unifiedTimeline, setUnifiedTimeline] = useState<UnifiedDailyTimelineResponse | null>(null);
   const [medicationNotifications, setMedicationNotifications] = useState<any[]>([]);
   const [medicationMessages, setMedicationMessages] = useState<MedicationMessageRecord[]>([]);
   const [dayReport, setDayReport] = useState<DaySimulationReport | null>(null);
@@ -118,14 +120,15 @@ export function App(): JSX.Element {
 
   async function refreshMedication(): Promise<void> {
     try {
-      const [dashboard, timeline, todayView, notifications, report, messages, time] = await Promise.all([
+      const [dashboard, timeline, todayView, notifications, report, messages, time, unified] = await Promise.all([
         api.getMedicationDashboard(patientId, dashboardDate),
         api.getMedicationTimeline(patientId, dashboardDate),
         api.getMedicationToday(patientId),
         api.getMedicationNotifications(patientId, dashboardDate),
         api.getMedicationSimulationDayReport(patientId, dashboardDate),
         api.getMedicationMessages(patientId, dashboardDate),
-        api.getSimulatedTime()
+        api.getSimulatedTime(),
+        api.getUnifiedDailyTimeline(patientId, dashboardDate)
       ]);
       setMedicationDashboard(dashboard);
       setMedicationTimeline(timeline);
@@ -134,6 +137,7 @@ export function App(): JSX.Element {
       setDayReport(report);
       setMedicationMessages(messages);
       setSimTime(time);
+      setUnifiedTimeline(unified);
       setErrorMessage("");
     } catch (error) {
       setErrorMessage((error as Error).message);
@@ -461,6 +465,21 @@ export function App(): JSX.Element {
                   </li>
                 ))}
               </ul>
+            )}
+          </div>
+          <div>
+            <h3>Unified Daily Care Plan</h3>
+            {unifiedTimeline ? (
+              <ul>
+                {unifiedTimeline.items.map((item) => (
+                  <li key={item.item_id}>
+                    <strong>{item.slot_time}</strong> [{item.item_type}] {item.title}{" "}
+                    <span className={`badge badge-${item.status}`}>{item.status}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p>No unified care timeline.</p>
             )}
           </div>
           <div>
