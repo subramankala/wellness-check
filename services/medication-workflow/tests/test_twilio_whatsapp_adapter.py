@@ -84,6 +84,18 @@ def _plan_payload_with_care(patient_id: str) -> dict:
             "confirmation_required": True,
             "escalation_policy": "reschedule if delayed",
         },
+        {
+            "activity_id": "physio_1500",
+            "title": "Physio",
+            "category": "physio",
+            "schedule": "15:00",
+            "duration_minutes": 30,
+            "instruction": "Physio breathing exercises",
+            "frequency": "daily",
+            "priority": "important",
+            "confirmation_required": True,
+            "escalation_policy": "caregiver follow-up if skipped",
+        },
     ]
     return plan
 
@@ -113,6 +125,29 @@ def _setup_with_care_contact(patient_id: str, patient_contact: str) -> None:
     payload["patient_contact"] = patient_contact
     client.post("/medication/patient", json=payload)
     response = client.post(f"/medication/patient/{patient_id}/plan", json=_plan_payload_with_care(patient_id))
+    assert response.status_code == 200
+
+
+def _setup_with_ambiguous_activities(patient_id: str, patient_contact: str) -> None:
+    payload = _patient_payload(patient_id)
+    payload["patient_contact"] = patient_contact
+    client.post("/medication/patient", json=payload)
+    plan = _plan_payload_with_care(patient_id)
+    plan["care_activities"].append(
+        {
+            "activity_id": "walking_1030",
+            "title": "Walking",
+            "category": "activity",
+            "schedule": "10:30",
+            "duration_minutes": 20,
+            "instruction": "Light walking session",
+            "frequency": "daily",
+            "priority": "routine",
+            "confirmation_required": True,
+            "escalation_policy": "reschedule if delayed",
+        }
+    )
+    response = client.post(f"/medication/patient/{patient_id}/plan", json=plan)
     assert response.status_code == 200
 
 
@@ -418,6 +453,50 @@ def test_inbound_done_command_marks_item_complete(monkeypatch) -> None:
     assert breakfast["status"] == "completed"
 
 
+def test_inbound_done_uppercase_breakfast(monkeypatch) -> None:
+    patient_id = "twilio_cmd_done_upper"
+    from_number = "+919999010010"
+    _setup_with_care_contact(patient_id, from_number)
+    client.post("/medication/simulated-time/set", json={"simulated_now": "2026-03-07T08:05:00+05:30"})
+    monkeypatch.setenv("TWILIO_VALIDATE_SIGNATURES", "false")
+
+    response = client.post(
+        "/webhooks/twilio/whatsapp/inbound",
+        data={"From": f"whatsapp:{from_number}", "Body": "DONE BREAKFAST"},
+    )
+    assert response.status_code == 200
+    assert "as done" in response.text
+
+
+def test_inbound_done_lowercase_breakfast(monkeypatch) -> None:
+    patient_id = "twilio_cmd_done_lower"
+    from_number = "+919999010011"
+    _setup_with_care_contact(patient_id, from_number)
+    client.post("/medication/simulated-time/set", json={"simulated_now": "2026-03-07T08:05:00+05:30"})
+    monkeypatch.setenv("TWILIO_VALIDATE_SIGNATURES", "false")
+
+    response = client.post(
+        "/webhooks/twilio/whatsapp/inbound",
+        data={"From": f"whatsapp:{from_number}", "Body": "done breakfast"},
+    )
+    assert response.status_code == 200
+    assert "as done" in response.text
+
+
+def test_inbound_done_ignores_punctuation(monkeypatch) -> None:
+    patient_id = "twilio_cmd_done_punct"
+    from_number = "+919999010015"
+    _setup_with_care_contact(patient_id, from_number)
+    monkeypatch.setenv("TWILIO_VALIDATE_SIGNATURES", "false")
+
+    response = client.post(
+        "/webhooks/twilio/whatsapp/inbound",
+        data={"From": f"whatsapp:{from_number}", "Body": "DONE, BREAKFAST!!!"},
+    )
+    assert response.status_code == 200
+    assert "as done" in response.text
+
+
 def test_inbound_move_command_retimes_activity(monkeypatch) -> None:
     patient_id = "twilio_cmd_move"
     from_number = "+919999010007"
@@ -434,6 +513,52 @@ def test_inbound_move_command_retimes_activity(monkeypatch) -> None:
     timeline = client.get(f"/careos/{patient_id}/timeline", params={"date": "2026-03-07"}).json()
     moved = next(item for item in timeline["items"] if item["item_type"] == "care_activity" and "Walk" in item["title"])
     assert moved["slot_time"] == "11:15"
+
+
+def test_inbound_delay_walk_30(monkeypatch) -> None:
+    patient_id = "twilio_cmd_delay_walk30"
+    from_number = "+919999010012"
+    _setup_with_care_contact(patient_id, from_number)
+    monkeypatch.setenv("TWILIO_VALIDATE_SIGNATURES", "false")
+
+    response = client.post(
+        "/webhooks/twilio/whatsapp/inbound",
+        data={"From": f"whatsapp:{from_number}", "Body": "DELAY WALK 30"},
+    )
+    assert response.status_code == 200
+    timeline = client.get(f"/careos/{patient_id}/timeline", params={"date": "2026-03-07"}).json()
+    walk = next(item for item in timeline["items"] if item["item_type"] == "care_activity" and item["title"] == "Walk")
+    assert walk["slot_time"] == "10:30"
+
+
+def test_inbound_skip_physio(monkeypatch) -> None:
+    patient_id = "twilio_cmd_skip_physio"
+    from_number = "+919999010013"
+    _setup_with_care_contact(patient_id, from_number)
+    monkeypatch.setenv("TWILIO_VALIDATE_SIGNATURES", "false")
+
+    response = client.post(
+        "/webhooks/twilio/whatsapp/inbound",
+        data={"From": f"whatsapp:{from_number}", "Body": "SKIP PHYSIO"},
+    )
+    assert response.status_code == 200
+    today = client.get(f"/careos/{patient_id}/today").json()
+    physio = next(item for item in today["timeline"]["items"] if item["item_type"] == "care_activity" and item["title"] == "Physio")
+    assert physio["status"] == "skipped"
+
+
+def test_inbound_ambiguous_item_names_returns_disambiguation(monkeypatch) -> None:
+    patient_id = "twilio_cmd_ambiguous"
+    from_number = "+919999010014"
+    _setup_with_ambiguous_activities(patient_id, from_number)
+    monkeypatch.setenv("TWILIO_VALIDATE_SIGNATURES", "false")
+
+    response = client.post(
+        "/webhooks/twilio/whatsapp/inbound",
+        data={"From": f"whatsapp:{from_number}", "Body": "DONE wal"},
+    )
+    assert response.status_code == 200
+    assert "Multiple items matched" in response.text
 
 
 def test_inbound_unknown_command_returns_help(monkeypatch) -> None:

@@ -12,6 +12,18 @@ Deterministic medication adherence and daily monitoring lane.
 
 This lane is intentionally separate from triage protocols.
 
+## Postgres Persistence
+
+- Set `DATABASE_URL` to enable durable persistence:
+  - `postgresql://triage:triage@postgres:5432/triage`
+- On startup, the service applies SQL migrations from:
+  - `services/medication-workflow/migrations/`
+- Persisted entities include:
+  - patients
+  - medication plans (including care activities)
+  - daily logs (timeline confirmations, message records, audit history)
+  - simulated time state
+
 ## Twilio WhatsApp Sandbox Pilot
 
 ### Required Configuration

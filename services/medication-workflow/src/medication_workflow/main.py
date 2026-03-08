@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
@@ -17,7 +18,7 @@ from medication_workflow.scheduler import (
     normalize_care_confirmation,
     parse_hhmm,
 )
-from medication_workflow.store import MedicationWorkflowStore
+from medication_workflow.store import MedicationWorkflowStore, PostgresMedicationWorkflowStore
 from medication_workflow.transport import (
     MessageTransport,
     MockMessageTransport,
@@ -92,7 +93,8 @@ configure_logging(os.getenv("LOG_LEVEL", "INFO"))
 logger = get_logger("medication_workflow", layer="operational-handoff")
 
 app = FastAPI(title="medication-workflow")
-STORE = MedicationWorkflowStore()
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+STORE = PostgresMedicationWorkflowStore(DATABASE_URL) if DATABASE_URL else MedicationWorkflowStore()
 
 
 def _build_transport() -> MessageTransport:
@@ -281,6 +283,7 @@ def _refresh_day_state(plan: MedicationPlan, log: DailyMedicationLog, at: dateti
     log.alerts = alerts
     log.symptom_escalations = escalations
     log.notifications = notifications_from_alerts(log.patient_id, log.date, alerts)
+    STORE.put_log(log)
     return log
 
 
@@ -933,10 +936,11 @@ def _twiml_message(text: str) -> Response:
 
 
 def _parse_inbound_command(body: str) -> tuple[str, list[str]]:
-    parts = [part for part in body.strip().split() if part]
-    if not parts:
+    raw_parts = [part for part in body.strip().split() if part]
+    if not raw_parts:
         return "", []
-    return parts[0].upper(), parts[1:]
+    command = re.sub(r"[^a-zA-Z0-9]", "", raw_parts[0]).upper()
+    return command, raw_parts[1:]
 
 
 def _find_care_instance_by_query(log: DailyMedicationLog, query: str) -> CareActivityInstance | None:
@@ -1077,17 +1081,8 @@ def _build_careos_today(
 
 
 def _find_timeline_item(timeline: UnifiedDailyTimelineResponse, query: str) -> UnifiedDailyTimelineItem | None:
-    needle = query.strip().lower()
-    if not needle:
-        return None
-    for item in timeline.items:
-        if (
-            needle in item.item_id.lower()
-            or needle in item.title.lower()
-            or needle == item.slot_time.lower()
-        ):
-            return item
-    return None
+    resolved, _ = _resolve_timeline_item_match(timeline, query)
+    return resolved
 
 
 def _resolve_timeline_item_by_id(timeline: UnifiedDailyTimelineResponse, item_id: str) -> UnifiedDailyTimelineItem | None:
@@ -1103,6 +1098,70 @@ def _requires_high_risk_guard(item: UnifiedDailyTimelineItem) -> bool:
 
 def _default_symptom_level() -> SymptomEscalationLevel:
     return SymptomEscalationLevel.WATCH
+
+
+def _normalize_match_text(value: str) -> str:
+    lowered = value.lower()
+    stripped = re.sub(r"[^a-z0-9\\s]", " ", lowered)
+    normalized = re.sub(r"\\s+", " ", stripped).strip()
+    return normalized
+
+
+def _match_candidates(timeline: UnifiedDailyTimelineResponse, query: str) -> tuple[list[UnifiedDailyTimelineItem], list[UnifiedDailyTimelineItem], list[UnifiedDailyTimelineItem]]:
+    normalized_query = _normalize_match_text(query)
+    if not normalized_query:
+        return ([], [], [])
+    exact: list[UnifiedDailyTimelineItem] = []
+    prefix: list[UnifiedDailyTimelineItem] = []
+    token: list[UnifiedDailyTimelineItem] = []
+    query_tokens = set(normalized_query.split())
+
+    for item in timeline.items:
+        title = _normalize_match_text(item.title)
+        item_id = _normalize_match_text(item.item_id)
+        slot = _normalize_match_text(item.slot_time)
+        title_tokens = set(title.split())
+
+        if normalized_query in {title, item_id, slot}:
+            exact.append(item)
+            continue
+        if title.startswith(normalized_query):
+            prefix.append(item)
+            continue
+        if query_tokens and query_tokens.issubset(title_tokens):
+            token.append(item)
+            continue
+    return exact, prefix, token
+
+
+def _resolve_timeline_item_match(
+    timeline: UnifiedDailyTimelineResponse,
+    query: str,
+) -> tuple[UnifiedDailyTimelineItem | None, list[UnifiedDailyTimelineItem]]:
+    exact, prefix, token = _match_candidates(timeline, query)
+
+    if len(exact) == 1:
+        return exact[0], []
+    if len(exact) > 1:
+        return None, exact
+    if len(prefix) == 1:
+        return prefix[0], []
+    if len(prefix) > 1:
+        return None, prefix
+    if len(token) == 1:
+        return token[0], []
+    if len(token) > 1:
+        return None, token
+    return None, []
+
+
+def _format_disambiguation(matches: list[UnifiedDailyTimelineItem]) -> str:
+    if not matches:
+        return "Could not find a matching item."
+    options = ", ".join(f"{item.slot_time} {item.title}" for item in matches[:4])
+    if len(matches) > 4:
+        options += ", ..."
+    return f"Multiple items matched. Please be specific: {options}"
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -1919,7 +1978,9 @@ async def twilio_whatsapp_inbound(request: Request) -> Response:
             query = " ".join(args).strip()
             if not query:
                 return _twiml_message(f"Usage: {command} <item>")
-            item = _find_timeline_item(timeline, query)
+            item, ambiguous = _resolve_timeline_item_match(timeline, query)
+            if ambiguous:
+                return _twiml_message(_format_disambiguation(ambiguous))
             if item is None:
                 return _twiml_message(f"Could not find item matching '{query}'.")
             action = "complete" if command == "DONE" else "skip"
@@ -1936,7 +1997,9 @@ async def twilio_whatsapp_inbound(request: Request) -> Response:
                 return _twiml_message("Usage: DELAY <item> <minutes>")
             delay_minutes = int(maybe_minutes)
             query = " ".join(args[:-1]).strip()
-            item = _find_timeline_item(timeline, query)
+            item, ambiguous = _resolve_timeline_item_match(timeline, query)
+            if ambiguous:
+                return _twiml_message(_format_disambiguation(ambiguous))
             if item is None:
                 return _twiml_message(f"Could not find item matching '{query}'.")
             updated_today = _careos_apply_action(
@@ -1958,7 +2021,9 @@ async def twilio_whatsapp_inbound(request: Request) -> Response:
             if parsed_time is None:
                 return _twiml_message("Usage: MOVE <item> <HH:MM>")
             query = " ".join(args[:-1]).strip()
-            item = _find_timeline_item(timeline, query)
+            item, ambiguous = _resolve_timeline_item_match(timeline, query)
+            if ambiguous:
+                return _twiml_message(_format_disambiguation(ambiguous))
             if item is None:
                 return _twiml_message(f"Could not find item matching '{query}'.")
             if item.item_type != "care_activity":
