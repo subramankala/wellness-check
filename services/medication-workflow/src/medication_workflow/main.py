@@ -860,6 +860,7 @@ def _latest_customer_message_at(patient_id: str) -> str:
 
 def _record_message(log: DailyMedicationLog, message: MedicationMessageRecord) -> None:
     log.messages.append(message)
+    STORE.put_log(log)
 
 
 def _window_by_id(windows: list[AdministrationWindow], window_id: str) -> AdministrationWindow | None:
@@ -1687,6 +1688,7 @@ def _careos_apply_action(
                 message="care activity delayed",
                 metadata={"item_id": item.item_id, "minutes": str(delay_minutes), "reason": reason},
             )
+            STORE.put_log(updated)
         else:
             mapping = {
                 "complete": CareActivityConfirmationStatus.DONE,
@@ -2039,6 +2041,7 @@ async def twilio_whatsapp_inbound(request: Request) -> Response:
             )
             instance.scheduled_datetime = moved.astimezone(UTC).isoformat()
             instance.local_scheduled_time = moved.isoformat()
+            STORE.put_log(updated)
             STORE.append_event(
                 patient_id=patient_id,
                 date=day,
