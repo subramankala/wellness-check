@@ -45,6 +45,7 @@ pythonpath = [
   "services/safety-engine/src",
   "services/handoff-router/src",
   "services/documentation/src",
+  "services/careos-mcp/src",
   "services/medication-workflow/src",
   "packages/shared-types/python/src",
   "packages/protocols/python/src",

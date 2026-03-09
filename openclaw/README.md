@@ -7,6 +7,7 @@ Workspace for medication workflow operational automations.
 - `skills/dispatch-due-medication-windows`
 - `skills/check-overdue-critical-doses`
 - `skills/send-caregiver-daily-summary`
+- `skills/careos-photo-intake`
 
 ## Cron Specs
 

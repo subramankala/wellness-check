@@ -1,0 +1,2 @@
+"""CareOS MCP server package."""
+
