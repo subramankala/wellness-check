@@ -2545,20 +2545,26 @@ async def twilio_whatsapp_status(request: Request) -> dict[str, str]:
             matched_message = message
 
     if matched_message is not None and matched_patient_id is not None:
-        matched_message.delivery_status = _map_twilio_delivery_status(status)
-        matched_message.metadata["twilio_status"] = status
+        resolved_status = _map_twilio_delivery_status(status)
+        message_log = STORE.get_log(matched_patient_id, matched_message.date)
+        for candidate in message_log.messages:
+            if candidate.message_id == message_sid:
+                candidate.delivery_status = resolved_status
+                candidate.metadata["twilio_status"] = status
+                break
+        STORE.put_log(message_log)
         STORE.append_event(
             patient_id=matched_patient_id,
             date=matched_message.date,
             event_type=ReviewActionType.MEDICATION_ALERT_RAISED,
             message="twilio delivery status updated",
-            metadata={"message_id": message_sid, "delivery_status": matched_message.delivery_status.value},
+            metadata={"message_id": message_sid, "delivery_status": resolved_status.value},
         )
         logger.info(
             "medication_delivery_status_updated",
             patient_id=matched_patient_id,
             message_id=message_sid,
-            delivery_status=matched_message.delivery_status.value,
+            delivery_status=resolved_status.value,
         )
         updated = True
 
