@@ -356,6 +356,7 @@ def test_inbound_schedule_command_returns_formatted_schedule(monkeypatch) -> Non
     assert response.status_code == 200
     assert "Schedule" in response.text
     assert "Breakfast" in response.text
+    assert "CriticalMed" in response.text
     assert "#1" in response.text
     assert "[" in response.text and "]" in response.text
 

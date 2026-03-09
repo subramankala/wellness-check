@@ -1205,7 +1205,7 @@ def _format_timeline_for_whatsapp(timeline: UnifiedDailyTimelineResponse, limit:
         return "No scheduled care items found for today."
     lines = [f"Schedule ({timeline.date}, {timeline.patient_timezone}):"]
     for index, item, ref in _timeline_with_refs(timeline)[:limit]:
-        lines.append(f"- #{index} [{ref}] {item.slot_time} {item.title} [{item.status}]")
+        lines.append(f"- #{index} [{ref}] {item.slot_time} {_whatsapp_item_summary(item)} [{item.status}]")
     if len(timeline.items) > limit:
         lines.append(f"...and {len(timeline.items) - limit} more")
     lines.append("Commands: NEXT, DONE <#|id|name>, SKIP <#|id|name>, DELAY <#|id|name> <minutes>")
@@ -1250,8 +1250,16 @@ def _format_next_for_whatsapp(
     if timeline is not None:
         index, ref = _find_item_ref(timeline, item)
         if index is not None and ref is not None:
-            return f"Next: #{index} [{ref}] {item.slot_time} {item.title} [{item.status}]."
-    return f"Next: {item.slot_time} {item.title} [{item.status}]."
+            return f"Next: #{index} [{ref}] {item.slot_time} {_whatsapp_item_summary(item)} [{item.status}]."
+    return f"Next: {item.slot_time} {_whatsapp_item_summary(item)} [{item.status}]."
+
+
+def _whatsapp_item_summary(item: UnifiedDailyTimelineItem) -> str:
+    if item.item_type == "medication_window":
+        meds = item.details.get("medications", "").strip()
+        if meds:
+            return f"{item.title}: {meds}"
+    return item.title
 
 
 def _whatsapp_help_text() -> str:
