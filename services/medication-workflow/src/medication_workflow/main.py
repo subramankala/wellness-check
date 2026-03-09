@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import zlib
 from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
@@ -29,6 +30,7 @@ from shared_types import (
     AdherenceAlert,
     AdministrationWindow,
     AdvanceSimulatedTimeRequest,
+    AuditEvent,
     CareActivityConfirmation,
     CareActivityConfirmationRequest,
     CareActivityConfirmationStatus,
@@ -947,8 +949,164 @@ def _resolve_patient_id_from_sender(sender: str) -> str | None:
             return patient.patient_id
         if _normalize_phone(patient.caregiver_contact) == source:
             return patient.patient_id
+    if source in _clinician_numbers():
+        default_patient = os.getenv("MEDICATION_CLINICIAN_DEFAULT_PATIENT_ID", "").strip()
+        if default_patient:
+            return default_patient
+        patients = STORE.list_patients()
+        if len(patients) == 1:
+            return patients[0].patient_id
     return None
 
+
+def _clinician_numbers() -> set[str]:
+    return {_normalize_phone(item) for item in _csv_set("MEDICATION_CLINICIAN_NUMBERS")}
+
+
+def _resolve_sender_role(patient: PatientRecord, sender: str) -> str:
+    normalized = _normalize_phone(sender)
+    if patient.patient_contact and _normalize_phone(patient.patient_contact) == normalized:
+        return "patient"
+    if _normalize_phone(patient.caregiver_contact) == normalized:
+        return "caregiver"
+    if normalized in _clinician_numbers():
+        return "clinician"
+    return "unknown"
+
+
+def _allowed_commands_for_role(role: str) -> set[str]:
+    read_only = {"TODAY", "SCHEDULE", "NEXT", "STATUS", "HELP", "HISTORY"}
+    if role == "patient":
+        return read_only | {"DONE", "SKIP", "DELAY", "UNDO", "CORRECT"}
+    if role == "caregiver":
+        return read_only | {"DONE", "SKIP", "DELAY", "MOVE", "UNDO", "CORRECT"}
+    if role == "clinician":
+        return read_only | {"DONE", "SKIP", "DELAY", "MOVE", "UNDO", "CORRECT"}
+    return {"HELP"}
+
+
+def _append_command_audit(
+    *,
+    patient_id: str,
+    day: str,
+    actor_id: str,
+    actor_name: str,
+    message: str,
+    metadata: dict[str, str],
+) -> None:
+    log = STORE.get_log(patient_id, day)
+    log.audit_events.append(
+        AuditEvent(
+            event_id=f"evt_{datetime.now(UTC).timestamp()}_{len(log.audit_events) + 1}",
+            event_type=ReviewActionType.REVIEW_STATUS_UPDATED,
+            timestamp=datetime.now(UTC).isoformat(),
+            actor_id=actor_id,
+            actor_name=actor_name,
+            message=message,
+            metadata=metadata,
+        )
+    )
+    STORE.put_log(log)
+
+
+def _recent_item_history(
+    *,
+    log: DailyMedicationLog,
+    item: UnifiedDailyTimelineItem,
+    limit: int = 5,
+) -> list[str]:
+    target = item.item_id
+    matches: list[AuditEvent] = []
+    for event in log.audit_events:
+        fields = {
+            event.metadata.get("item_id", ""),
+            event.metadata.get("window_id", ""),
+            event.metadata.get("instance_id", ""),
+        }
+        if target in fields:
+            matches.append(event)
+    matches.sort(key=lambda event: event.timestamp, reverse=True)
+    lines: list[str] = []
+    for event in matches[:limit]:
+        timestamp = datetime.fromisoformat(event.timestamp).strftime("%H:%M")
+        action = event.metadata.get("command_action", event.message)
+        lines.append(f"- {timestamp} {action}")
+    return lines
+
+
+def _undo_item_action(
+    *,
+    patient_id: str,
+    plan: MedicationPlan,
+    item: UnifiedDailyTimelineItem,
+    now_utc: datetime,
+) -> tuple[bool, str]:
+    timezone = _zoneinfo(plan.timezone)
+    day = _local_day_from_utc(now_utc, timezone)
+    log = STORE.get_log(patient_id, day)
+    updated = _refresh_day_state(plan, log, now_utc)
+
+    removed_count = 0
+    if item.item_type == "medication_window":
+        windows = _administration_windows(updated, timezone)
+        window = _window_by_id(windows, item.item_id)
+        if window is None:
+            return False, "Medication window not found for undo."
+        reminder_ids = {entry.reminder_id for entry in window.meds}
+        for reminder_id in reminder_ids:
+            candidate_indexes = [
+                index for index, confirmation in enumerate(updated.confirmations) if confirmation.reminder_id == reminder_id
+            ]
+            if not candidate_indexes:
+                continue
+            latest_index = max(
+                candidate_indexes,
+                key=lambda index: datetime.fromisoformat(updated.confirmations[index].confirmed_at),
+            )
+            updated.confirmations.pop(latest_index)
+            removed_count += 1
+    elif item.item_type == "care_activity":
+        candidate_indexes = [
+            index
+            for index, confirmation in enumerate(updated.care_activity_confirmations)
+            if confirmation.instance_id == item.item_id
+        ]
+        if candidate_indexes:
+            latest_index = max(
+                candidate_indexes,
+                key=lambda index: datetime.fromisoformat(updated.care_activity_confirmations[index].confirmed_at),
+            )
+            updated.care_activity_confirmations.pop(latest_index)
+            removed_count = 1
+    else:
+        return False, "Unsupported item type for undo."
+
+    if removed_count == 0:
+        return False, "No previous action found to undo."
+
+    STORE.put_log(updated)
+    _refresh_day_state(plan, updated, now_utc)
+    return True, f"Undid {removed_count} recent action(s)."
+
+
+def _apply_corrected_action(
+    *,
+    patient_id: str,
+    item: UnifiedDailyTimelineItem,
+    status: str,
+    minutes: int | None,
+) -> CareOsTodayResponse:
+    normalized = status.strip().upper()
+    mapping = {"DONE": "complete", "SKIPPED": "skip", "DELAYED": "delay"}
+    if normalized not in mapping:
+        raise HTTPException(status_code=400, detail="CORRECT status must be DONE, SKIPPED, or DELAYED")
+    return _careos_apply_action(
+        patient_id=patient_id,
+        item=item,
+        action=mapping[normalized],
+        minutes=minutes if mapping[normalized] == "delay" else None,
+        reason="whatsapp_correct",
+    )
 
 async def _extract_form_data(request: Request) -> dict[str, str]:
     content_type = request.headers.get("content-type", "").lower()
@@ -973,6 +1131,60 @@ def _parse_inbound_command(body: str) -> tuple[str, list[str]]:
     return command, raw_parts[1:]
 
 
+def _timeline_item_ref(item: UnifiedDailyTimelineItem) -> str:
+    # Stable short reference derived from persistent item_id.
+    return f"{zlib.crc32(item.item_id.encode('utf-8')) & 0xFFFF:04X}"
+
+
+def _timeline_with_refs(
+    timeline: UnifiedDailyTimelineResponse,
+) -> list[tuple[int, UnifiedDailyTimelineItem, str]]:
+    seen: set[str] = set()
+    rows: list[tuple[int, UnifiedDailyTimelineItem, str]] = []
+    for index, item in enumerate(timeline.items, start=1):
+        ref = _timeline_item_ref(item)
+        if ref in seen:
+            ref = f"{ref}{index % 10}"
+        seen.add(ref)
+        rows.append((index, item, ref))
+    return rows
+
+
+def _normalize_ref_query(query: str) -> str:
+    normalized = query.strip().lower()
+    normalized = re.sub(r"^(number|no|item)\\s+", "", normalized)
+    normalized = normalized.lstrip("#")
+    return normalized
+
+
+def _resolve_timeline_item_reference(
+    timeline: UnifiedDailyTimelineResponse,
+    query: str,
+) -> tuple[UnifiedDailyTimelineItem | None, list[UnifiedDailyTimelineItem]]:
+    normalized = _normalize_ref_query(query)
+    if normalized:
+        rows = _timeline_with_refs(timeline)
+        if normalized.isdigit():
+            index = int(normalized)
+            for row_index, item, _ in rows:
+                if row_index == index:
+                    return item, []
+            return None, []
+        ref_matches = [item for _, item, ref in rows if ref.lower() == normalized]
+        if len(ref_matches) == 1:
+            return ref_matches[0], []
+        if len(ref_matches) > 1:
+            return None, ref_matches
+    return _resolve_timeline_item_match(timeline, query)
+
+
+def _find_item_ref(timeline: UnifiedDailyTimelineResponse, target: UnifiedDailyTimelineItem) -> tuple[int | None, str | None]:
+    for index, item, ref in _timeline_with_refs(timeline):
+        if item.item_id == target.item_id:
+            return index, ref
+    return None, None
+
+
 def _find_care_instance_by_query(log: DailyMedicationLog, query: str) -> CareActivityInstance | None:
     needle = query.strip().lower()
     if not needle:
@@ -992,11 +1204,11 @@ def _format_timeline_for_whatsapp(timeline: UnifiedDailyTimelineResponse, limit:
     if not timeline.items:
         return "No scheduled care items found for today."
     lines = [f"Schedule ({timeline.date}, {timeline.patient_timezone}):"]
-    for item in timeline.items[:limit]:
-        lines.append(f"- {item.slot_time} {item.title} [{item.status}]")
+    for index, item, ref in _timeline_with_refs(timeline)[:limit]:
+        lines.append(f"- #{index} [{ref}] {item.slot_time} {item.title} [{item.status}]")
     if len(timeline.items) > limit:
         lines.append(f"...and {len(timeline.items) - limit} more")
-    lines.append("Commands: NEXT, SKIP <activity>, DELAY <activity> <minutes>")
+    lines.append("Commands: NEXT, DONE <#|id|name>, SKIP <#|id|name>, DELAY <#|id|name> <minutes>")
     return "\n".join(lines)
 
 
@@ -1017,17 +1229,28 @@ def _format_today_for_whatsapp(today: MedicationTodayView) -> str:
 
 def _format_careos_today_for_whatsapp(today: CareOsTodayResponse) -> str:
     escalation = ", ".join(today.symptom_escalation_flags) if today.symptom_escalation_flags else "none"
+    next_item = _next_timeline_item(today.timeline)
+    next_line = _format_next_for_whatsapp(next_item, timeline=today.timeline)
     return (
         f"TODAY ({today.date}, {today.patient_timezone})\n"
         f"Completed: {len(today.completed_items)} | Pending: {len(today.pending_items)} | Overdue: {len(today.overdue_items)}\n"
         f"Escalation: {escalation}\n"
-        f"{today.medication_adherence_summary.summary_text}"
+        f"{today.medication_adherence_summary.summary_text}\n"
+        f"{next_line}"
     )
 
 
-def _format_next_for_whatsapp(item: UnifiedDailyTimelineItem | None) -> str:
+def _format_next_for_whatsapp(
+    item: UnifiedDailyTimelineItem | None,
+    *,
+    timeline: UnifiedDailyTimelineResponse | None = None,
+) -> str:
     if item is None:
         return "No pending items. All scheduled care items are complete."
+    if timeline is not None:
+        index, ref = _find_item_ref(timeline, item)
+        if index is not None and ref is not None:
+            return f"Next: #{index} [{ref}] {item.slot_time} {item.title} [{item.status}]."
     return f"Next: {item.slot_time} {item.title} [{item.status}]."
 
 
@@ -1035,7 +1258,8 @@ def _whatsapp_help_text() -> str:
     return (
         "Commands:\n"
         "TODAY\nSCHEDULE\nNEXT\nSTATUS\n"
-        "DONE <item>\nSKIP <item>\nDELAY <item> <minutes>\nMOVE <item> <HH:MM>\nHELP"
+        "DONE <#|id|item>\nSKIP <#|id|item>\nDELAY <#|id|item> <minutes>\nMOVE <#|id|item> <HH:MM>\n"
+        "UNDO <#|id|item>\nCORRECT <#|id|item> <DONE|SKIPPED|DELAYED> [minutes]\nHISTORY <#|id|item>\nHELP"
     )
 
 
@@ -1132,8 +1356,8 @@ def _default_symptom_level() -> SymptomEscalationLevel:
 
 def _normalize_match_text(value: str) -> str:
     lowered = value.lower()
-    stripped = re.sub(r"[^a-z0-9\\s]", " ", lowered)
-    normalized = re.sub(r"\\s+", " ", stripped).strip()
+    stripped = re.sub(r"[^a-z0-9\s]", " ", lowered)
+    normalized = re.sub(r"\s+", " ", stripped).strip()
     return normalized
 
 
@@ -1188,7 +1412,15 @@ def _resolve_timeline_item_match(
 def _format_disambiguation(matches: list[UnifiedDailyTimelineItem]) -> str:
     if not matches:
         return "Could not find a matching item."
-    options = ", ".join(f"{item.slot_time} {item.title}" for item in matches[:4])
+    synthetic_timeline = UnifiedDailyTimelineResponse(
+        patient_id="unknown",
+        date="unknown",
+        items=matches,
+    )
+    options = ", ".join(
+        f"#{index} [{ref}] {item.slot_time} {item.title}"
+        for index, item, ref in _timeline_with_refs(synthetic_timeline)[:4]
+    )
     if len(matches) > 4:
         options += ", ..."
     return f"Multiple items matched. Please be specific: {options}"
@@ -1994,7 +2226,7 @@ async def twilio_whatsapp_inbound(request: Request) -> Response:
         raise HTTPException(status_code=403, detail="pilot mode: inbound sender number not allowed")
 
     command, args = _parse_inbound_command(body)
-    if command in {"SCHEDULE", "TODAY", "NEXT", "STATUS", "DONE", "SKIP", "DELAY", "MOVE", "HELP"}:
+    if command in {"SCHEDULE", "TODAY", "NEXT", "STATUS", "DONE", "SKIP", "DELAY", "MOVE", "UNDO", "CORRECT", "HISTORY", "HELP"}:
         patient, plan = _assert_patient_and_plan(patient_id)
         timezone_name = _patient_timezone(patient, plan)
         timezone = _zoneinfo(timezone_name)
@@ -2002,6 +2234,12 @@ async def twilio_whatsapp_inbound(request: Request) -> Response:
         day = local_now.date().isoformat()
         timeline = careos_timeline(patient_id, day)
         careos_today_view = careos_today(patient_id)
+        sender_role = _resolve_sender_role(patient, from_number)
+
+        if sender_role == "unknown":
+            return _twiml_message("This number is not authorized for command actions on this patient profile.")
+        if command and command not in _allowed_commands_for_role(sender_role):
+            return _twiml_message(f"{command} is not allowed for role {sender_role}.")
 
         if command == "HELP":
             return _twiml_message(_whatsapp_help_text())
@@ -2010,31 +2248,133 @@ async def twilio_whatsapp_inbound(request: Request) -> Response:
         if command in {"TODAY", "STATUS"}:
             return _twiml_message(_format_careos_today_for_whatsapp(careos_today_view))
         if command == "NEXT":
-            return _twiml_message(_format_next_for_whatsapp(_next_timeline_item(timeline)))
+            return _twiml_message(_format_next_for_whatsapp(_next_timeline_item(timeline), timeline=timeline))
+        if command == "HISTORY":
+            query = " ".join(args).strip()
+            if not query:
+                return _twiml_message("Usage: HISTORY <#|id|item>")
+            item, ambiguous = _resolve_timeline_item_reference(timeline, query)
+            if ambiguous:
+                return _twiml_message(_format_disambiguation(ambiguous))
+            if item is None:
+                return _twiml_message(f"Could not find item matching '{query}'.")
+            log = STORE.get_log(patient_id, day)
+            history = _recent_item_history(log=log, item=item, limit=5)
+            if not history:
+                return _twiml_message(f"No action history found for {item.title}.")
+            return _twiml_message(f"History for {item.title}:\n" + "\n".join(history))
+        if command == "UNDO":
+            query = " ".join(args).strip()
+            if not query:
+                return _twiml_message("Usage: UNDO <#|id|item>")
+            item, ambiguous = _resolve_timeline_item_reference(timeline, query)
+            if ambiguous:
+                return _twiml_message(_format_disambiguation(ambiguous))
+            if item is None:
+                return _twiml_message(f"Could not find item matching '{query}'.")
+            undone, message = _undo_item_action(
+                patient_id=patient_id,
+                plan=plan,
+                item=item,
+                now_utc=STORE.now(),
+            )
+            if not undone:
+                return _twiml_message(message)
+            _append_command_audit(
+                patient_id=patient_id,
+                day=day,
+                actor_id=sender_role,
+                actor_name=sender_role,
+                message="whatsapp undo applied",
+                metadata={"command_action": "undo", "item_id": item.item_id},
+            )
+            refreshed = careos_today(patient_id)
+            return _twiml_message(
+                f"{message} {_format_next_for_whatsapp(refreshed.next_item, timeline=refreshed.timeline)}"
+            )
+        if command == "CORRECT":
+            if len(args) < 2:
+                return _twiml_message("Usage: CORRECT <#|id|item> <DONE|SKIPPED|DELAYED> [minutes]")
+            maybe_minutes: int | None = None
+            status_token = args[-1]
+            query_parts = args[:-1]
+            if len(args) >= 3 and args[-1].isdigit():
+                maybe_minutes = int(args[-1])
+                status_token = args[-2]
+                query_parts = args[:-2]
+            query = " ".join(query_parts).strip()
+            if not query:
+                return _twiml_message("Usage: CORRECT <#|id|item> <DONE|SKIPPED|DELAYED> [minutes]")
+            item, ambiguous = _resolve_timeline_item_reference(timeline, query)
+            if ambiguous:
+                return _twiml_message(_format_disambiguation(ambiguous))
+            if item is None:
+                return _twiml_message(f"Could not find item matching '{query}'.")
+            _undo_item_action(
+                patient_id=patient_id,
+                plan=plan,
+                item=item,
+                now_utc=STORE.now(),
+            )
+            try:
+                updated_today = _apply_corrected_action(
+                    patient_id=patient_id,
+                    item=item,
+                    status=status_token,
+                    minutes=maybe_minutes,
+                )
+            except HTTPException:
+                return _twiml_message("CORRECT status must be DONE, SKIPPED, or DELAYED.")
+            _append_command_audit(
+                patient_id=patient_id,
+                day=day,
+                actor_id=sender_role,
+                actor_name=sender_role,
+                message="whatsapp correction applied",
+                metadata={
+                    "command_action": f"correct:{status_token.upper()}",
+                    "item_id": item.item_id,
+                    "minutes": str(maybe_minutes or 0),
+                },
+            )
+            return _twiml_message(
+                f"Corrected {item.title} to {status_token.upper()}. "
+                f"{_format_next_for_whatsapp(updated_today.next_item, timeline=updated_today.timeline)}"
+            )
         if command in {"DONE", "SKIP"}:
             query = " ".join(args).strip()
             if not query:
-                return _twiml_message(f"Usage: {command} <item>")
-            item, ambiguous = _resolve_timeline_item_match(timeline, query)
+                return _twiml_message(f"Usage: {command} <#|id|item>")
+            item, ambiguous = _resolve_timeline_item_reference(timeline, query)
             if ambiguous:
                 return _twiml_message(_format_disambiguation(ambiguous))
             if item is None:
                 return _twiml_message(f"Could not find item matching '{query}'.")
             action = "complete" if command == "DONE" else "skip"
             updated_today = _careos_apply_action(patient_id=patient_id, item=item, action=action, reason="whatsapp_command")
+            index, ref = _find_item_ref(timeline, item)
+            ref_text = f"#{index} [{ref}] " if index is not None and ref is not None else ""
+            _append_command_audit(
+                patient_id=patient_id,
+                day=day,
+                actor_id=sender_role,
+                actor_name=sender_role,
+                message="whatsapp action applied",
+                metadata={"command_action": action, "item_id": item.item_id},
+            )
             return _twiml_message(
-                f"Marked {item.title} as {'done' if action == 'complete' else 'skipped'}. "
-                f"{_format_next_for_whatsapp(updated_today.next_item)}"
+                f"Marked {ref_text}{item.title} as {'done' if action == 'complete' else 'skipped'}. "
+                f"{_format_next_for_whatsapp(updated_today.next_item, timeline=updated_today.timeline)}"
             )
         if command == "DELAY":
             if len(args) < 2:
-                return _twiml_message("Usage: DELAY <item> <minutes>")
+                return _twiml_message("Usage: DELAY <#|id|item> <minutes>")
             maybe_minutes = args[-1]
             if not maybe_minutes.isdigit():
-                return _twiml_message("Usage: DELAY <item> <minutes>")
+                return _twiml_message("Usage: DELAY <#|id|item> <minutes>")
             delay_minutes = int(maybe_minutes)
             query = " ".join(args[:-1]).strip()
-            item, ambiguous = _resolve_timeline_item_match(timeline, query)
+            item, ambiguous = _resolve_timeline_item_reference(timeline, query)
             if ambiguous:
                 return _twiml_message(_format_disambiguation(ambiguous))
             if item is None:
@@ -2046,19 +2386,27 @@ async def twilio_whatsapp_inbound(request: Request) -> Response:
                 minutes=delay_minutes,
                 reason="whatsapp_command",
             )
+            _append_command_audit(
+                patient_id=patient_id,
+                day=day,
+                actor_id=sender_role,
+                actor_name=sender_role,
+                message="whatsapp action applied",
+                metadata={"command_action": f"delay:{delay_minutes}", "item_id": item.item_id},
+            )
             return _twiml_message(
                 f"Marked DELAYED: {item.title} by {delay_minutes} minutes. "
-                f"{_format_next_for_whatsapp(updated_today.next_item)}"
+                f"{_format_next_for_whatsapp(updated_today.next_item, timeline=updated_today.timeline)}"
             )
         if command == "MOVE":
             if len(args) < 2:
-                return _twiml_message("Usage: MOVE <item> <HH:MM>")
+                return _twiml_message("Usage: MOVE <#|id|item> <HH:MM>")
             target_time = args[-1]
             parsed_time = _parse_move_time(target_time)
             if parsed_time is None:
-                return _twiml_message("Usage: MOVE <item> <HH:MM>")
+                return _twiml_message("Usage: MOVE <#|id|item> <HH:MM>")
             query = " ".join(args[:-1]).strip()
-            item, ambiguous = _resolve_timeline_item_match(timeline, query)
+            item, ambiguous = _resolve_timeline_item_reference(timeline, query)
             if ambiguous:
                 return _twiml_message(_format_disambiguation(ambiguous))
             if item is None:
@@ -2084,9 +2432,17 @@ async def twilio_whatsapp_inbound(request: Request) -> Response:
                 message="care activity moved via whatsapp command",
                 metadata={"item_id": item.item_id, "target_time": target_time},
             )
+            _append_command_audit(
+                patient_id=patient_id,
+                day=day,
+                actor_id=sender_role,
+                actor_name=sender_role,
+                message="whatsapp action applied",
+                metadata={"command_action": f"move:{target_time}", "item_id": item.item_id},
+            )
             refreshed = careos_today(patient_id)
             return _twiml_message(
-                f"Moved {instance.title} to {target_time}. {_format_next_for_whatsapp(refreshed.next_item)}"
+                f"Moved {instance.title} to {target_time}. {_format_next_for_whatsapp(refreshed.next_item, timeline=refreshed.timeline)}"
             )
 
     target_message: MedicationMessageRecord | None = None

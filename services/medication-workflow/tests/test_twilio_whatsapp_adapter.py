@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -116,6 +117,15 @@ def _setup_with_contact(patient_id: str, patient_contact: str) -> None:
 
 def _setup_with_care(patient_id: str) -> None:
     client.post("/medication/patient", json=_patient_payload(patient_id))
+    response = client.post(f"/medication/patient/{patient_id}/plan", json=_plan_payload_with_care(patient_id))
+    assert response.status_code == 200
+
+
+def _setup_with_caregiver_contact(patient_id: str, caregiver_contact: str) -> None:
+    payload = _patient_payload(patient_id)
+    payload["patient_contact"] = "+919999099999"
+    payload["caregiver_contact"] = caregiver_contact
+    client.post("/medication/patient", json=payload)
     response = client.post(f"/medication/patient/{patient_id}/plan", json=_plan_payload_with_care(patient_id))
     assert response.status_code == 200
 
@@ -346,6 +356,8 @@ def test_inbound_schedule_command_returns_formatted_schedule(monkeypatch) -> Non
     assert response.status_code == 200
     assert "Schedule" in response.text
     assert "Breakfast" in response.text
+    assert "#1" in response.text
+    assert "[" in response.text and "]" in response.text
 
 
 def test_inbound_today_command_returns_status_summary(monkeypatch) -> None:
@@ -390,6 +402,7 @@ def test_inbound_next_command_returns_next_item(monkeypatch) -> None:
     )
     assert response.status_code == 200
     assert "Next:" in response.text
+    assert "#" in response.text
 
 
 def test_inbound_skip_activity_command_marks_care_activity_skipped(monkeypatch) -> None:
@@ -441,12 +454,21 @@ def test_inbound_done_command_marks_item_complete(monkeypatch) -> None:
     client.post("/medication/simulated-time/set", json={"simulated_now": "2026-03-07T08:05:00+05:30"})
     monkeypatch.setenv("TWILIO_VALIDATE_SIGNATURES", "false")
 
+    schedule_response = client.post(
+        "/webhooks/twilio/whatsapp/inbound",
+        data={"From": f"whatsapp:{from_number}", "Body": "SCHEDULE"},
+    )
+    assert schedule_response.status_code == 200
+    match = re.search(r"#(\d+)", schedule_response.text)
+    assert match is not None
+    item_number = match.group(1)
+
     response = client.post(
         "/webhooks/twilio/whatsapp/inbound",
-        data={"From": f"whatsapp:{from_number}", "Body": "DONE breakfast"},
+        data={"From": f"whatsapp:{from_number}", "Body": f"DONE {item_number}"},
     )
     assert response.status_code == 200
-    assert "Marked Breakfast as done" in response.text
+    assert "as done" in response.text
 
     today = client.get(f"/careos/{patient_id}/today").json()
     breakfast = next(item for item in today["timeline"]["items"] if item["item_type"] == "care_activity" and "Breakfast" in item["title"])
@@ -499,8 +521,8 @@ def test_inbound_done_ignores_punctuation(monkeypatch) -> None:
 
 def test_inbound_move_command_retimes_activity(monkeypatch) -> None:
     patient_id = "twilio_cmd_move"
-    from_number = "+919999010007"
-    _setup_with_care_contact(patient_id, from_number)
+    from_number = "+919999020007"
+    _setup_with_caregiver_contact(patient_id, from_number)
     monkeypatch.setenv("TWILIO_VALIDATE_SIGNATURES", "false")
 
     response = client.post(
@@ -529,6 +551,29 @@ def test_inbound_delay_walk_30(monkeypatch) -> None:
     timeline = client.get(f"/careos/{patient_id}/timeline", params={"date": "2026-03-07"}).json()
     walk = next(item for item in timeline["items"] if item["item_type"] == "care_activity" and item["title"] == "Walk")
     assert walk["slot_time"] == "10:30"
+
+
+def test_inbound_done_with_short_id(monkeypatch) -> None:
+    patient_id = "twilio_cmd_done_id"
+    from_number = "+919999010016"
+    _setup_with_care_contact(patient_id, from_number)
+    monkeypatch.setenv("TWILIO_VALIDATE_SIGNATURES", "false")
+
+    schedule = client.post(
+        "/webhooks/twilio/whatsapp/inbound",
+        data={"From": f"whatsapp:{from_number}", "Body": "SCHEDULE"},
+    )
+    assert schedule.status_code == 200
+    match = re.search(r"\[([A-F0-9]{4,5})\]", schedule.text)
+    assert match is not None
+    short_id = match.group(1)
+
+    done = client.post(
+        "/webhooks/twilio/whatsapp/inbound",
+        data={"From": f"whatsapp:{from_number}", "Body": f"DONE {short_id}"},
+    )
+    assert done.status_code == 200
+    assert "as done" in done.text
 
 
 def test_inbound_skip_physio(monkeypatch) -> None:
@@ -573,6 +618,122 @@ def test_inbound_unknown_command_returns_help(monkeypatch) -> None:
     )
     assert response.status_code == 200
     assert "Commands:" in response.text
+
+
+def test_patient_role_cannot_move_items(monkeypatch) -> None:
+    patient_id = "twilio_role_patient_move_blocked"
+    from_number = "+919999010017"
+    _setup_with_care_contact(patient_id, from_number)
+    monkeypatch.setenv("TWILIO_VALIDATE_SIGNATURES", "false")
+
+    response = client.post(
+        "/webhooks/twilio/whatsapp/inbound",
+        data={"From": f"whatsapp:{from_number}", "Body": "MOVE walk 11:10"},
+    )
+    assert response.status_code == 200
+    assert "not allowed for role patient" in response.text
+
+
+def test_caregiver_role_can_move_items(monkeypatch) -> None:
+    patient_id = "twilio_role_caregiver_move_allowed"
+    from_number = "+919999020008"
+    _setup_with_caregiver_contact(patient_id, from_number)
+    monkeypatch.setenv("TWILIO_VALIDATE_SIGNATURES", "false")
+
+    response = client.post(
+        "/webhooks/twilio/whatsapp/inbound",
+        data={"From": f"whatsapp:{from_number}", "Body": "MOVE walk 11:10"},
+    )
+    assert response.status_code == 200
+    assert "Moved Walk to 11:10" in response.text
+
+
+def test_clinician_role_can_move_items(monkeypatch) -> None:
+    patient_id = "twilio_role_clinician_move_allowed"
+    _setup_with_care(patient_id)
+    monkeypatch.setenv("TWILIO_VALIDATE_SIGNATURES", "false")
+    monkeypatch.setenv("MEDICATION_CLINICIAN_NUMBERS", "+919888777666")
+    monkeypatch.setenv("MEDICATION_CLINICIAN_DEFAULT_PATIENT_ID", patient_id)
+
+    response = client.post(
+        "/webhooks/twilio/whatsapp/inbound",
+        data={"From": "whatsapp:+919888777666", "Body": "MOVE walk 11:20"},
+    )
+    assert response.status_code == 200
+    assert "Moved Walk to 11:20" in response.text
+
+
+def test_undo_reverts_latest_action(monkeypatch) -> None:
+    patient_id = "twilio_cmd_undo"
+    from_number = "+919999010018"
+    _setup_with_care_contact(patient_id, from_number)
+    client.post("/medication/simulated-time/set", json={"simulated_now": "2026-03-07T08:05:00+05:30"})
+    monkeypatch.setenv("TWILIO_VALIDATE_SIGNATURES", "false")
+
+    done = client.post(
+        "/webhooks/twilio/whatsapp/inbound",
+        data={"From": f"whatsapp:{from_number}", "Body": "DONE breakfast"},
+    )
+    assert done.status_code == 200
+
+    undo = client.post(
+        "/webhooks/twilio/whatsapp/inbound",
+        data={"From": f"whatsapp:{from_number}", "Body": "UNDO breakfast"},
+    )
+    assert undo.status_code == 200
+    assert "Undid" in undo.text
+
+    today = client.get(f"/careos/{patient_id}/today").json()
+    breakfast = next(item for item in today["timeline"]["items"] if item["item_type"] == "care_activity" and "Breakfast" in item["title"])
+    assert breakfast["status"] in {"due", "overdue", "upcoming"}
+
+
+def test_correct_updates_item_status(monkeypatch) -> None:
+    patient_id = "twilio_cmd_correct"
+    from_number = "+919999010019"
+    _setup_with_care_contact(patient_id, from_number)
+    monkeypatch.setenv("TWILIO_VALIDATE_SIGNATURES", "false")
+
+    skip = client.post(
+        "/webhooks/twilio/whatsapp/inbound",
+        data={"From": f"whatsapp:{from_number}", "Body": "SKIP breakfast"},
+    )
+    assert skip.status_code == 200
+
+    correct = client.post(
+        "/webhooks/twilio/whatsapp/inbound",
+        data={"From": f"whatsapp:{from_number}", "Body": "CORRECT breakfast DONE"},
+    )
+    assert correct.status_code == 200
+    assert "Corrected Breakfast to DONE" in correct.text
+
+    today = client.get(f"/careos/{patient_id}/today").json()
+    breakfast = next(item for item in today["timeline"]["items"] if item["item_type"] == "care_activity" and "Breakfast" in item["title"])
+    assert breakfast["status"] == "completed"
+
+
+def test_history_returns_recent_item_actions(monkeypatch) -> None:
+    patient_id = "twilio_cmd_history"
+    from_number = "+919999010020"
+    _setup_with_care_contact(patient_id, from_number)
+    monkeypatch.setenv("TWILIO_VALIDATE_SIGNATURES", "false")
+
+    client.post(
+        "/webhooks/twilio/whatsapp/inbound",
+        data={"From": f"whatsapp:{from_number}", "Body": "DONE breakfast"},
+    )
+    client.post(
+        "/webhooks/twilio/whatsapp/inbound",
+        data={"From": f"whatsapp:{from_number}", "Body": "UNDO breakfast"},
+    )
+
+    history = client.post(
+        "/webhooks/twilio/whatsapp/inbound",
+        data={"From": f"whatsapp:{from_number}", "Body": "HISTORY breakfast"},
+    )
+    assert history.status_code == 200
+    assert "History for Breakfast" in history.text
+    assert "-" in history.text
 
 
 def test_delivery_status_callback_updates_message_state(monkeypatch) -> None:
